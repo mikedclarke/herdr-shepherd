@@ -22,9 +22,8 @@ kind = "routine"
 directory = "~/work/pm"
 prompt = "Run the morning digest"
 permission_mode = "auto"
-auto_close = false
 
-[routine]
+[schedule]
 preset = "weekdays"
 hours = [6]
 minute = 15
@@ -39,16 +38,19 @@ command = "./git-sync.sh"
 preset = "weekdays"
 hours = [6]
 `)
-	actions, err := LoadActions(dir)
-	if err != nil {
-		t.Fatal(err)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) > 0 {
+		t.Fatalf("err=%v fileErrs=%v", err, fileErrs)
 	}
 	if len(actions) != 2 {
 		t.Fatalf("got %d actions", len(actions))
 	}
 	digest := actions[0]
-	if digest.Name != "pm-digest" || digest.AutoCloses() || digest.CLI != "claude" {
+	if digest.Name != "pm-digest" || digest.AutoClose || digest.CLI != "claude" {
 		t.Errorf("unexpected digest action: %+v", digest)
+	}
+	if digest.Routine.Preset != "weekdays" || digest.Routine.Minute != 15 {
+		t.Errorf("[schedule] table should populate the routine spec: %+v", digest.Routine)
 	}
 	if !strings.HasSuffix(digest.Dir(), "/work/pm") || strings.Contains(digest.Dir(), "~") {
 		t.Errorf("Dir should expand ~: %s", digest.Dir())
@@ -56,27 +58,52 @@ hours = [6]
 }
 
 func TestLoadActionsMissingDirIsEmpty(t *testing.T) {
-	actions, err := LoadActions(filepath.Join(t.TempDir(), "nope"))
-	if err != nil || actions != nil {
-		t.Errorf("got %v, %v", actions, err)
+	actions, fileErrs, err := LoadActions(filepath.Join(t.TempDir(), "nope"))
+	if err != nil || actions != nil || fileErrs != nil {
+		t.Errorf("got %v, %v, %v", actions, fileErrs, err)
 	}
 }
 
-func TestLoadActionsRejectsInvalid(t *testing.T) {
+func TestLoadActionsRejectsInvalidPerFile(t *testing.T) {
 	cases := map[string]string{
 		"no prompt":      "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\n",
 		"bad kind":       "name = \"a\"\nkind = \"cronjob\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n",
 		"bad cli":        "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\ncli = \"gpt\"\n",
 		"bad permission": "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\npermission_mode = \"yolo\"\n",
 		"no directory":   "name = \"a\"\nkind = \"heartbeat\"\nprompt = \"x\"\n",
-		"bad cron":       "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[routine]\npreset = \"cron\"\ncron = \"nope\"\n",
+		"bad cron":       "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\npreset = \"cron\"\ncron = \"nope\"\n",
+		"impossible":     "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\npreset = \"cron\"\ncron = \"0 0 30 2 *\"\n",
+		"unknown key":    "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\npermision_mode = \"skip\"\n",
+		"bad minute":     "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\nminute = 90\n",
+		"bad month_day":  "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\npreset = \"monthly\"\nmonth_day = 31\n",
+		"bad hour":       "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\nhours = [25]\n",
 	}
 	for label, content := range cases {
 		dir := t.TempDir()
 		writeAction(t, dir, "a.toml", content)
-		if _, err := LoadActions(dir); err == nil {
-			t.Errorf("%s: expected error", label)
+		actions, fileErrs, err := LoadActions(dir)
+		if err != nil {
+			t.Fatalf("%s: unexpected dir error %v", label, err)
 		}
+		if len(fileErrs) != 1 || len(actions) != 0 {
+			t.Errorf("%s: expected one file error and no actions, got errs=%v actions=%d", label, fileErrs, len(actions))
+		}
+	}
+}
+
+func TestLoadActionsBrokenFileDoesNotDisableOthers(t *testing.T) {
+	dir := t.TempDir()
+	writeAction(t, dir, "good.toml", "name = \"ok\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n")
+	writeAction(t, dir, "zz-broken.toml", "name = \"broken\nkind=")
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 1 || actions[0].Name != "ok" {
+		t.Errorf("valid action should survive a broken sibling: %v", actions)
+	}
+	if len(fileErrs) != 1 {
+		t.Errorf("expected one file error, got %v", fileErrs)
 	}
 }
 
@@ -85,8 +112,12 @@ func TestLoadActionsRejectsDuplicateNames(t *testing.T) {
 	base := "name = \"dup\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n"
 	writeAction(t, dir, "a.toml", base)
 	writeAction(t, dir, "b.toml", base)
-	if _, err := LoadActions(dir); err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Errorf("expected duplicate error, got %v", err)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 1 || len(fileErrs) != 1 || !strings.Contains(fileErrs[0].Error(), "duplicate") {
+		t.Errorf("expected first kept + duplicate error, got actions=%d errs=%v", len(actions), fileErrs)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 )
 
 // herdrClient talks to the running herdr server over its unix socket. The
@@ -31,12 +32,32 @@ type herdrError struct {
 
 func (e *herdrError) Error() string { return fmt.Sprintf("herdr: %s: %s", e.Code, e.Message) }
 
+func hasCode(err error, code string) bool {
+	var he *herdrError
+	return errors.As(err, &he) && he.Code == code
+}
+
+func isTimeout(err error) bool       { return hasCode(err, "timeout") }
+func isAgentNotFound(err error) bool { return hasCode(err, "agent_not_found") }
+func isPaneNotFound(err error) bool  { return hasCode(err, "pane_not_found") }
+
+// callDeadline is the ceiling for calls that respond immediately. Calls that
+// legitimately block server-side (agent.wait) extend it by their own timeout.
+const callDeadline = 30 * time.Second
+
 func (c *herdrClient) call(method string, params map[string]any, out any) error {
+	return c.callWithin(callDeadline, method, params, out)
+}
+
+func (c *herdrClient) callWithin(deadline time.Duration, method string, params map[string]any, out any) error {
 	conn, err := net.Dial("unix", c.socketPath)
 	if err != nil {
 		return fmt.Errorf("connect herdr socket: %w", err)
 	}
 	defer conn.Close()
+	// A wedged server would otherwise pin the caller (and its action's
+	// running flag) forever.
+	conn.SetDeadline(time.Now().Add(deadline))
 
 	req := map[string]any{"id": "herdr-shepherd", "method": method, "params": params}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
@@ -60,14 +81,9 @@ func (c *herdrClient) call(method string, params map[string]any, out any) error 
 	return nil
 }
 
-func isTimeout(err error) bool {
-	var he *herdrError
-	return errors.As(err, &he) && he.Code == "timeout"
-}
-
 // workspaceCreate opens an unfocused workspace at cwd and returns its id plus
 // the root pane's id.
-func (c *herdrClient) workspaceCreate(cwd, label string) (workspaceID, paneID string, err error) {
+func (c *herdrClient) workspaceCreate(cwd, label string, env map[string]string) (workspaceID, paneID string, err error) {
 	var out struct {
 		Workspace struct {
 			WorkspaceID string `json:"workspace_id"`
@@ -76,12 +92,15 @@ func (c *herdrClient) workspaceCreate(cwd, label string) (workspaceID, paneID st
 			PaneID string `json:"pane_id"`
 		} `json:"root_pane"`
 	}
-	err = c.call("workspace.create", map[string]any{
+	params := map[string]any{
 		"cwd":   cwd,
 		"label": label,
 		"focus": false,
-	}, &out)
-	if err != nil {
+	}
+	if len(env) > 0 {
+		params["env"] = env
+	}
+	if err := c.call("workspace.create", params, &out); err != nil {
 		return "", "", err
 	}
 	return out.Workspace.WorkspaceID, out.RootPane.PaneID, nil
@@ -102,15 +121,17 @@ func (c *herdrClient) runCommand(paneID, command string) error {
 	}, nil)
 }
 
-// agentWait blocks until the agent in target reaches one of the given states,
-// or errors with code "timeout". It returns the observed state.
+// agentWait blocks until the agent in target reaches one of the given states.
+// It errors with code "timeout" on expiry and "agent_not_found" whenever the
+// pane currently has no detected agent — including before one starts and after
+// it exits.
 func (c *herdrClient) agentWait(target string, until []string, timeoutMS int) (string, error) {
 	var out struct {
 		Agent struct {
 			AgentStatus string `json:"agent_status"`
 		} `json:"agent"`
 	}
-	err := c.call("agent.wait", map[string]any{
+	err := c.callWithin(time.Duration(timeoutMS)*time.Millisecond+callDeadline, "agent.wait", map[string]any{
 		"target":     target,
 		"until":      until,
 		"timeout_ms": timeoutMS,
@@ -121,16 +142,11 @@ func (c *herdrClient) agentWait(target string, until []string, timeoutMS int) (s
 	return out.Agent.AgentStatus, nil
 }
 
-func (c *herdrClient) agentStatus(target string) (string, error) {
-	var out struct {
-		Agent struct {
-			AgentStatus string `json:"agent_status"`
-		} `json:"agent"`
-	}
-	if err := c.call("agent.get", map[string]any{"target": target}, &out); err != nil {
-		return "", err
-	}
-	return out.Agent.AgentStatus, nil
+// paneExists distinguishes "the agent exited" from "the pane/workspace is
+// gone" after an agent_not_found.
+func (c *herdrClient) paneExists(paneID string) bool {
+	err := c.call("pane.get", map[string]any{"pane_id": paneID}, nil)
+	return err == nil
 }
 
 func (c *herdrClient) notify(title, body, sound string) error {

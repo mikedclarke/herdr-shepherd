@@ -1,17 +1,20 @@
 id = "mikedclarke.herdr-shepherd"
 name = "Shepherd"
-version = "0.1.0"
+# Keep in sync with `version` in main.go.
+version = "0.2.0"
 min_herdr_version = "0.7.0"
-description = "Scheduled agent sessions: heartbeats, cron routines, and scripts, launched as visible herdr panes."
+description = "Scheduled agent sessions: heartbeats, cron routines, and scripts, launched as visible herdr workspaces."
 platforms = ["linux", "macos"]
 
 [[build]]
 platforms = ["linux", "macos"]
 command = ["sh", "scripts/build.sh"]
 
+# Startup hooks are one-shot: --detach spawns the scheduler and exits, so the
+# hook completes cleanly and the daemon's logs live in the plugin state dir.
 [[startup]]
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-shepherd", "daemon"]
+command = ["./bin/herdr-shepherd", "daemon", "--detach"]
 
 [[actions]]
 id = "status"

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -41,19 +42,23 @@ type Action struct {
 	CLI            string `toml:"cli"`
 	Model          string `toml:"model"`
 	PermissionMode string `toml:"permission_mode"`
-	AutoClose      *bool  `toml:"auto_close"`
+	AutoClose      bool   `toml:"auto_close"`
 	WatchMinutes   int    `toml:"watch_minutes"`
 	Command        string `toml:"command"`
 	TimeoutMinutes int    `toml:"timeout_minutes"`
 
 	Heartbeat HeartbeatSpec `toml:"heartbeat"`
-	Routine   RoutineSpec   `toml:"routine"`
+	Schedule  *RoutineSpec  `toml:"schedule"`
+	// Deprecated alias for [schedule], kept for existing configs.
+	Routine RoutineSpec `toml:"routine"`
 }
 
-func (a *Action) IsEnabled() bool  { return a.Enabled == nil || *a.Enabled }
-func (a *Action) AutoCloses() bool { return a.AutoClose == nil || *a.AutoClose }
+func (a *Action) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
 func (a *Action) applyDefaults() {
+	if a.Schedule != nil {
+		a.Routine = *a.Schedule
+	}
 	if a.CLI == "" {
 		a.CLI = "claude"
 	}
@@ -66,7 +71,7 @@ func (a *Action) applyDefaults() {
 	if a.TimeoutMinutes <= 0 {
 		a.TimeoutMinutes = 30
 	}
-	if a.Heartbeat.IntervalMinutes <= 0 {
+	if a.Heartbeat.IntervalMinutes == 0 {
 		a.Heartbeat.IntervalMinutes = 30
 	}
 	if a.Routine.Preset == "" {
@@ -75,11 +80,13 @@ func (a *Action) applyDefaults() {
 	if len(a.Routine.Hours) == 0 {
 		a.Routine.Hours = []int{9}
 	}
-	if a.Routine.MonthDay <= 0 {
+	if a.Routine.MonthDay == 0 {
 		a.Routine.MonthDay = 1
 	}
 }
 
+// validate rejects rather than clamps: a silently adjusted schedule runs at a
+// time the user never asked for.
 func (a *Action) validate() error {
 	if a.Name == "" {
 		return fmt.Errorf("name is required")
@@ -110,13 +117,37 @@ func (a *Action) validate() error {
 	if a.Directory == "" {
 		return fmt.Errorf("%s: directory is required", a.Name)
 	}
-	if a.Kind == KindRoutine || a.Kind == KindScript {
-		if _, err := a.Routine.cronExpression(); err != nil {
-			return fmt.Errorf("%s: %w", a.Name, err)
+	if a.Kind == KindHeartbeat {
+		if a.Heartbeat.IntervalMinutes < 1 {
+			return fmt.Errorf("%s: heartbeat interval_minutes must be >= 1", a.Name)
+		}
+		if wh := a.Heartbeat.WorkingHours; wh != nil {
+			if err := wh.validate(); err != nil {
+				return fmt.Errorf("%s: %w", a.Name, err)
+			}
 		}
 	}
-	if wh := a.Heartbeat.WorkingHours; wh != nil {
-		if err := wh.validate(); err != nil {
+	if a.Kind == KindRoutine || a.Kind == KindScript {
+		r := a.Routine
+		if r.Minute < 0 || r.Minute > 59 {
+			return fmt.Errorf("%s: schedule minute must be 0-59, got %d", a.Name, r.Minute)
+		}
+		if r.MonthDay < 1 || r.MonthDay > 28 {
+			return fmt.Errorf("%s: schedule month_day must be 1-28, got %d", a.Name, r.MonthDay)
+		}
+		for _, h := range r.Hours {
+			if h < 0 || h > 23 {
+				return fmt.Errorf("%s: schedule hour %d out of range 0-23", a.Name, h)
+			}
+		}
+		for _, d := range r.Days {
+			if d < 0 || d > 6 {
+				return fmt.Errorf("%s: schedule day %d out of range 0-6", a.Name, d)
+			}
+		}
+		// A parseable expression can still be unsatisfiable (e.g. Feb 30);
+		// catch it here instead of never running.
+		if _, err := r.NextRoutine(time.Now()); err != nil {
 			return fmt.Errorf("%s: %w", a.Name, err)
 		}
 	}
@@ -176,19 +207,23 @@ func (a *Action) AgentCommand() (string, error) {
 	return strings.Join(parts, " "), nil
 }
 
+// shellQuote is POSIX single-quote quoting; it assumes an sh-compatible shell
+// in the target pane.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// LoadActions reads every *.toml in dir. A missing dir is an empty list, not an
-// error, so the daemon runs cleanly before the user configures anything.
-func LoadActions(dir string) ([]*Action, error) {
+// LoadActions reads every *.toml in dir. A missing dir is an empty list, not
+// an error, so the daemon runs cleanly before the user configures anything.
+// A broken file disables only itself: it is returned in fileErrs while the
+// remaining files load normally.
+func LoadActions(dir string) (actions []*Action, fileErrs []error, err error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var names []string
 	for _, e := range entries {
@@ -198,23 +233,30 @@ func LoadActions(dir string) ([]*Action, error) {
 	}
 	sort.Strings(names)
 
-	var actions []*Action
 	seen := map[string]string{}
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		var a Action
-		if _, err := toml.DecodeFile(path, &a); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+		md, decodeErr := toml.DecodeFile(path, &a)
+		if decodeErr != nil {
+			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", name, decodeErr))
+			continue
+		}
+		if u := md.Undecoded(); len(u) > 0 {
+			fileErrs = append(fileErrs, fmt.Errorf("%s: unknown key %q", name, u[0].String()))
+			continue
 		}
 		a.applyDefaults()
 		if err := a.validate(); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", name, err))
+			continue
 		}
 		if prev, dup := seen[a.Name]; dup {
-			return nil, fmt.Errorf("%s: duplicate action name %q (also in %s)", name, a.Name, prev)
+			fileErrs = append(fileErrs, fmt.Errorf("%s: duplicate action name %q (also in %s)", name, a.Name, prev))
+			continue
 		}
 		seen[a.Name] = name
 		actions = append(actions, &a)
 	}
-	return actions, nil
+	return actions, fileErrs, nil
 }

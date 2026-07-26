@@ -108,6 +108,15 @@ func (r RoutineSpec) NextRoutine(t time.Time) (time.Time, error) {
 	return sched.Next(t)
 }
 
+// sameWallClock reports whether two instants show the same local date, hour,
+// and minute. On a DST fall-back day the minute scan meets the repeated hour
+// twice; comparing wall clocks lets the caller drop the second occurrence.
+func sameWallClock(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd && a.Hour() == b.Hour() && a.Minute() == b.Minute()
+}
+
 func clamp(v, lo, hi int) int {
 	if v < lo {
 		return lo
