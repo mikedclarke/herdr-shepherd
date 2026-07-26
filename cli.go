@@ -1,0 +1,174 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"text/tabwriter"
+	"time"
+)
+
+func cmdList() error {
+	p := resolvePaths()
+	actions, err := LoadActions(p.ActionsDir())
+	if err != nil {
+		return err
+	}
+	if len(actions) == 0 {
+		fmt.Printf("No actions. Add *.toml files to %s\n", p.ActionsDir())
+		return nil
+	}
+	st := loadState(p.StateFile())
+	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tKIND\tENABLED\tSCHEDULE\tLAST RUN\tNEXT RUN")
+	now := time.Now()
+	for _, a := range actions {
+		as := st.forAction(a.Name)
+		fmt.Fprintf(w, "%s\t%s\t%v\t%s\t%s\t%s\n",
+			a.Name, a.Kind, a.IsEnabled(), scheduleSummary(a),
+			fmtTime(as.LastRunAt, as.LastStatus), fmtTime(nextRun(a, as, now), ""))
+	}
+	return w.Flush()
+}
+
+func scheduleSummary(a *Action) string {
+	switch a.Kind {
+	case KindHeartbeat:
+		s := fmt.Sprintf("every %dm", a.Heartbeat.IntervalMinutes)
+		if wh := a.Heartbeat.WorkingHours; wh != nil {
+			s += fmt.Sprintf(" (%02d-%02dh)", wh.StartHour, wh.EndHour)
+		}
+		return s
+	default:
+		if a.Routine.Preset == "cron" {
+			return a.Routine.Cron
+		}
+		return fmt.Sprintf("%s %s:%02d", a.Routine.Preset, joinInts(uniqueSorted(a.Routine.Hours, 0, 23)), clamp(a.Routine.Minute, 0, 59))
+	}
+}
+
+func nextRun(a *Action, as *actionState, now time.Time) time.Time {
+	if !a.IsEnabled() {
+		return time.Time{}
+	}
+	switch a.Kind {
+	case KindHeartbeat:
+		if as.LastRunAt.IsZero() {
+			return now
+		}
+		return a.Heartbeat.NextHeartbeat(as.LastRunAt)
+	default:
+		anchor := now
+		if as.LastRunAt.After(anchor) {
+			anchor = as.LastRunAt
+		}
+		next, err := a.Routine.NextRoutine(anchor)
+		if err != nil {
+			return time.Time{}
+		}
+		return next
+	}
+}
+
+func fmtTime(t time.Time, suffix string) string {
+	if t.IsZero() {
+		return "-"
+	}
+	s := t.Format("Mon 15:04")
+	if suffix != "" {
+		s += " (" + suffix + ")"
+	}
+	return s
+}
+
+func cmdStatus(notify bool) error {
+	p := resolvePaths()
+	st := loadState(p.StateFile())
+	alive := !st.HeartbeatAt.IsZero() && time.Since(st.HeartbeatAt) < 3*tickInterval
+	title := "Shepherd: daemon not running"
+	if alive {
+		title = "Shepherd: daemon running"
+	}
+
+	actions, err := LoadActions(p.ActionsDir())
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	body := ""
+	enabled := 0
+	var soonest time.Time
+	var soonestName string
+	for _, a := range actions {
+		if !a.IsEnabled() {
+			continue
+		}
+		enabled++
+		if n := nextRun(a, st.forAction(a.Name), now); !n.IsZero() && (soonest.IsZero() || n.Before(soonest)) {
+			soonest, soonestName = n, a.Name
+		}
+	}
+	if enabled == 0 {
+		body = "No enabled actions"
+	} else {
+		body = fmt.Sprintf("%d enabled action(s); next: %s at %s", enabled, soonestName, soonest.Format("Mon 15:04"))
+	}
+
+	fmt.Println(title)
+	fmt.Println(body)
+	if notify {
+		client, err := newHerdrClient()
+		if err != nil {
+			return err
+		}
+		return client.notify(title, body, "")
+	}
+	return nil
+}
+
+// cmdRun fires one action immediately. Scripts run synchronously; agent actions
+// are started in a workspace and left to the user (no watcher, no auto-close —
+// a manual run means someone is present).
+func cmdRun(name string) error {
+	p := resolvePaths()
+	actions, err := LoadActions(p.ActionsDir())
+	if err != nil {
+		return err
+	}
+	var action *Action
+	var names []string
+	for _, a := range actions {
+		names = append(names, a.Name)
+		if a.Name == name {
+			action = a
+		}
+	}
+	if action == nil {
+		return fmt.Errorf("no action named %q; available: %v", name, names)
+	}
+
+	if action.Kind == KindScript {
+		fmt.Printf("Running %s in %s\n", action.Name, action.Dir())
+		cmd := execCommand(action)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	client, err := newHerdrClient()
+	if err != nil {
+		return err
+	}
+	command, err := action.AgentCommand()
+	if err != nil {
+		return err
+	}
+	wsID, paneID, err := client.workspaceCreate(action.Dir(), action.Name)
+	if err != nil {
+		return err
+	}
+	if err := client.runCommand(paneID, command); err != nil {
+		return err
+	}
+	fmt.Printf("Started %s in workspace %s\n", action.Name, wsID)
+	return nil
+}

@@ -1,0 +1,20 @@
+id = "mikedclarke.herdr-shepherd"
+name = "Shepherd"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Scheduled agent sessions: heartbeats, cron routines, and scripts, launched as visible herdr panes."
+platforms = ["linux", "macos"]
+
+[[build]]
+platforms = ["linux", "macos"]
+command = ["sh", "scripts/build.sh"]
+
+[[startup]]
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-shepherd", "daemon"]
+
+[[actions]]
+id = "status"
+title = "Shepherd: Status"
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-shepherd", "status", "--notify"]

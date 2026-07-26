@@ -1,0 +1,220 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+type Kind string
+
+const (
+	KindHeartbeat Kind = "heartbeat"
+	KindRoutine   Kind = "routine"
+	KindScript    Kind = "script"
+)
+
+type HeartbeatSpec struct {
+	IntervalMinutes int           `toml:"interval_minutes"`
+	WorkingHours    *WorkingHours `toml:"working_hours"`
+}
+
+type RoutineSpec struct {
+	Preset   string `toml:"preset"`
+	Hours    []int  `toml:"hours"`
+	Minute   int    `toml:"minute"`
+	Days     []int  `toml:"days"`
+	MonthDay int    `toml:"month_day"`
+	Cron     string `toml:"cron"`
+}
+
+type Action struct {
+	Name           string `toml:"name"`
+	Kind           Kind   `toml:"kind"`
+	Directory      string `toml:"directory"`
+	Enabled        *bool  `toml:"enabled"`
+	Prompt         string `toml:"prompt"`
+	CLI            string `toml:"cli"`
+	Model          string `toml:"model"`
+	PermissionMode string `toml:"permission_mode"`
+	AutoClose      *bool  `toml:"auto_close"`
+	WatchMinutes   int    `toml:"watch_minutes"`
+	Command        string `toml:"command"`
+	TimeoutMinutes int    `toml:"timeout_minutes"`
+
+	Heartbeat HeartbeatSpec `toml:"heartbeat"`
+	Routine   RoutineSpec   `toml:"routine"`
+}
+
+func (a *Action) IsEnabled() bool  { return a.Enabled == nil || *a.Enabled }
+func (a *Action) AutoCloses() bool { return a.AutoClose == nil || *a.AutoClose }
+
+func (a *Action) applyDefaults() {
+	if a.CLI == "" {
+		a.CLI = "claude"
+	}
+	if a.PermissionMode == "" {
+		a.PermissionMode = "default"
+	}
+	if a.WatchMinutes <= 0 {
+		a.WatchMinutes = 240
+	}
+	if a.TimeoutMinutes <= 0 {
+		a.TimeoutMinutes = 30
+	}
+	if a.Heartbeat.IntervalMinutes <= 0 {
+		a.Heartbeat.IntervalMinutes = 30
+	}
+	if a.Routine.Preset == "" {
+		a.Routine.Preset = "daily"
+	}
+	if len(a.Routine.Hours) == 0 {
+		a.Routine.Hours = []int{9}
+	}
+	if a.Routine.MonthDay <= 0 {
+		a.Routine.MonthDay = 1
+	}
+}
+
+func (a *Action) validate() error {
+	if a.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if strings.ContainsAny(a.Name, " \t\n") {
+		return fmt.Errorf("name %q must not contain whitespace", a.Name)
+	}
+	switch a.Kind {
+	case KindHeartbeat, KindRoutine:
+		if strings.TrimSpace(a.Prompt) == "" {
+			return fmt.Errorf("%s: prompt is required", a.Name)
+		}
+		if a.CLI != "claude" && a.CLI != "codex" {
+			return fmt.Errorf("%s: cli must be claude or codex, got %q", a.Name, a.CLI)
+		}
+		switch a.PermissionMode {
+		case "default", "auto", "skip":
+		default:
+			return fmt.Errorf("%s: permission_mode must be default, auto, or skip, got %q", a.Name, a.PermissionMode)
+		}
+	case KindScript:
+		if strings.TrimSpace(a.Command) == "" {
+			return fmt.Errorf("%s: command is required", a.Name)
+		}
+	default:
+		return fmt.Errorf("%s: kind must be heartbeat, routine, or script, got %q", a.Name, a.Kind)
+	}
+	if a.Directory == "" {
+		return fmt.Errorf("%s: directory is required", a.Name)
+	}
+	if a.Kind == KindRoutine || a.Kind == KindScript {
+		if _, err := a.Routine.cronExpression(); err != nil {
+			return fmt.Errorf("%s: %w", a.Name, err)
+		}
+	}
+	if wh := a.Heartbeat.WorkingHours; wh != nil {
+		if err := wh.validate(); err != nil {
+			return fmt.Errorf("%s: %w", a.Name, err)
+		}
+	}
+	return nil
+}
+
+// Dir returns the action's directory with ~ and $VARS expanded.
+func (a *Action) Dir() string {
+	return expandPath(a.Directory)
+}
+
+func expandPath(p string) string {
+	p = os.ExpandEnv(p)
+	if p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	}
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
+
+// AgentCommand builds the shell command that starts the agent session with the
+// action's prompt. Flags match what each CLI accepts for its permission modes.
+func (a *Action) AgentCommand() (string, error) {
+	prompt := strings.TrimSpace(a.Prompt)
+	if prompt == "" {
+		return "", fmt.Errorf("prompt is required")
+	}
+	parts := []string{a.CLI}
+	switch a.CLI {
+	case "claude":
+		switch a.PermissionMode {
+		case "auto":
+			parts = append(parts, "--permission-mode", "auto")
+		case "skip":
+			parts = append(parts, "--dangerously-skip-permissions")
+		}
+	case "codex":
+		switch a.PermissionMode {
+		case "auto":
+			parts = append(parts, "--ask-for-approval", "on-request", "--sandbox", "workspace-write")
+		case "skip":
+			parts = append(parts, "--dangerously-bypass-approvals-and-sandbox")
+		}
+	default:
+		return "", fmt.Errorf("unsupported cli %q", a.CLI)
+	}
+	if m := strings.TrimSpace(a.Model); m != "" {
+		parts = append(parts, "--model", shellQuote(m))
+	}
+	parts = append(parts, shellQuote(prompt))
+	return strings.Join(parts, " "), nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// LoadActions reads every *.toml in dir. A missing dir is an empty list, not an
+// error, so the daemon runs cleanly before the user configures anything.
+func LoadActions(dir string) ([]*Action, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".toml") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	var actions []*Action
+	seen := map[string]string{}
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		var a Action
+		if _, err := toml.DecodeFile(path, &a); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		a.applyDefaults()
+		if err := a.validate(); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if prev, dup := seen[a.Name]; dup {
+			return nil, fmt.Errorf("%s: duplicate action name %q (also in %s)", name, a.Name, prev)
+		}
+		seen[a.Name] = name
+		actions = append(actions, &a)
+	}
+	return actions, nil
+}
