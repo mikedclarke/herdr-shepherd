@@ -1,0 +1,14 @@
+# Agent/editor instruction files — never published
+CLAUDE.md
+AGENTS.md
+.claude/
+MEMORY.md
+LEARNINGS.md
+
+# Build artifacts
+bin/
+dist/
+
+# Local environment
+.env
+.DS_Store
