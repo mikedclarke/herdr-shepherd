@@ -45,11 +45,13 @@ description = "shepherd: status board"
 
 (then `herdr server reload-config`), or with `herdr plugin action invoke board --plugin mikedclarke.herdr-shepherd`, or by typing `herdr-shepherd board` in any terminal.
 
-From the board: `space` pauses/resumes the selected action (an in-place edit of its TOML — comments and formatting survive), `r` fires it now with manual-run semantics, `enter` shows its full config and recent run history, `e` opens its TOML in `$EDITOR` (falling back to nano, never an unasked-for vi), and `n` opens a guided form. Broken TOML files appear as rows with their parse error, so a typo is something you see, not something you discover a missed run later.
+From the board: `space` pauses/resumes the selected action (an in-place edit of its TOML — comments and formatting survive), `r` fires it now with manual-run semantics, `enter` shows its full config and recent run history, and `e` opens the action in the guided form. Broken TOML files appear as rows with their parse error, so a typo is something you see, not something you discover a missed run later.
 
-The board is fully mouse-driven too: wheel to scroll, click a row to select it, click again (or right-click) for details, click the footer hints as buttons, click anywhere to leave the detail view.
+The board is fully mouse-driven too: wheel to scroll, click a row to select it, click again for details, click the footer hints as buttons. The detail view has its own buttons — `[ edit ] [ run now ] [ pause ] [ back ]`. (Right-click belongs to herdr's pane menu, not the board.)
 
-`n` — the new-action form — asks for fields by name: pick the kind and the schedule preset with `‹ ›`, fill in the rest, and it generates valid TOML for you, checked by the same validation the daemon uses before anything is written. New actions are created paused so you can look them over on the board and resume with `space`.
+Creating and editing never require touching a file: the trailing `+ new action…` row (or `n`) opens the guided form, and `e` / `[ edit ]` opens the same form pre-filled. The form asks for fields by name — pick the kind and the schedule preset with `‹ ›`, fill in the rest with per-field help — and generates valid TOML, checked by the same validation the daemon uses before anything is written. New actions start paused until you enable them; the form never overwrites another action, and renaming moves the file for you.
+
+For hand-maintained TOML (comments, unusual formatting), `E` opens the raw file in `$EDITOR` — falling back to nano, never an unasked-for vi. A form save rewrites the file cleanly, so keep comment-heavy files on the `E` path.
 
 Invoked as a plugin action it opens as a zoomed herdr pane and closes back to where you were; typed in a shell it runs right there.
 

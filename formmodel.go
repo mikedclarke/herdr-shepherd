@@ -38,21 +38,24 @@ type formField struct {
 const formFieldsTop = 2
 
 type formModel struct {
-	dir     string // actions dir the saved file lands in
-	values  map[string]string
-	fields  []formField
-	cursor  int // 0..len(fields)-1, then len = Save, len+1 = Cancel
-	editing bool
-	editBuf string
-	err     string
+	dir      string // actions dir the saved file lands in
+	editPath string // non-empty when editing an existing action's file
+	origName string // the edited action's name at load time (rename detection)
+	values   map[string]string
+	fields   []formField
+	cursor   int // 0..len(fields)-1, then len = Save, len+1 = Cancel
+	editing  bool
+	editBuf  string
+	err      string
 }
 
 func newFormModel(actionsDir string) *formModel {
 	f := &formModel{
 		dir: actionsDir,
 		values: map[string]string{
-			"name": "", "kind": "routine", "directory": "~", "prompt": "",
-			"cli": "claude", "model": "", "permission_mode": "default",
+			"name": "", "kind": "routine", "directory": "~", "enabled": "false",
+			"prompt": "",
+			"cli":    "claude", "model": "", "permission_mode": "default",
 			"auto_close": "false", "watch_minutes": "240",
 			"command": "", "timeout_minutes": "30",
 			"interval_minutes": "30",
@@ -64,6 +67,56 @@ func newFormModel(actionsDir string) *formModel {
 	return f
 }
 
+// newFormModelForAction opens the form pre-filled with an existing action for
+// editing. Saving rewrites the file cleanly (hand-written comments do not
+// survive a form edit; the raw-TOML editor remains for that).
+func newFormModelForAction(a *Action, actionsDir string) *formModel {
+	f := newFormModel(actionsDir)
+	f.editPath = a.SourceFile
+	f.origName = a.Name
+	v := f.values
+	v["name"] = a.Name
+	v["kind"] = string(a.Kind)
+	v["directory"] = a.Directory
+	v["enabled"] = fmt.Sprintf("%t", a.IsEnabled())
+	v["prompt"] = a.Prompt
+	v["cli"] = a.CLI
+	v["model"] = a.Model
+	v["permission_mode"] = a.PermissionMode
+	v["auto_close"] = fmt.Sprintf("%t", a.AutoClose)
+	v["watch_minutes"] = strconv.Itoa(a.WatchMinutes)
+	v["command"] = a.Command
+	v["timeout_minutes"] = strconv.Itoa(a.TimeoutMinutes)
+	v["interval_minutes"] = strconv.Itoa(a.Heartbeat.IntervalMinutes)
+	r := a.Routine
+	if r.Preset != "" {
+		v["preset"] = r.Preset
+	}
+	if len(r.Hours) > 0 {
+		v["hours"] = csvInts(r.Hours)
+	}
+	v["minute"] = strconv.Itoa(r.Minute)
+	if len(r.Days) > 0 {
+		v["days"] = csvInts(r.Days)
+	}
+	if r.MonthDay > 0 {
+		v["month_day"] = strconv.Itoa(r.MonthDay)
+	}
+	if r.Cron != "" {
+		v["cron"] = r.Cron
+	}
+	f.rebuild()
+	return f
+}
+
+func csvInts(ns []int) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, ",")
+}
+
 // rebuild recomputes the visible field list from the current kind/preset.
 func (f *formModel) rebuild() {
 	kind := f.values["kind"]
@@ -71,6 +124,7 @@ func (f *formModel) rebuild() {
 		{key: "name", label: "name", ftype: ftText, help: "unique, no spaces; also the file name"},
 		{key: "kind", label: "kind", ftype: ftEnum, options: []string{"routine", "heartbeat", "script"}, help: "routine: agent on a schedule · heartbeat: agent every N minutes · script: command on a schedule"},
 		{key: "directory", label: "directory", ftype: ftText, help: "where the session or command runs"},
+		{key: "enabled", label: "enabled", ftype: ftBool, help: "paused actions never fire"},
 	}
 	if kind == "script" {
 		fields = append(fields,
@@ -272,9 +326,23 @@ func (f *formModel) trySave() (bool, bool) {
 		f.err = err.Error()
 		return false, false
 	}
-	if _, err := writeActionTOML(f.dir, a); err != nil {
+	target := filepath.Join(f.dir, a.Name+".toml")
+	if f.editPath == "" || (a.Name != f.origName) {
+		// Creating, or renaming onto a new file: never clobber an existing one.
+		if _, err := os.Stat(target); err == nil {
+			f.err = fmt.Sprintf("%s already exists", filepath.Base(target))
+			return false, false
+		}
+	}
+	if f.editPath != "" && a.Name == f.origName {
+		target = f.editPath
+	}
+	if err := writeActionFile(target, a); err != nil {
 		f.err = err.Error()
 		return false, false
+	}
+	if f.editPath != "" && target != f.editPath {
+		os.Remove(f.editPath)
 	}
 	return true, true
 }
@@ -283,12 +351,12 @@ func (f *formModel) trySave() (bool, bool) {
 // the same defaults + validation as the daemon's loader.
 func (f *formModel) buildAction() (*Action, error) {
 	v := f.values
-	disabled := false
+	enabled := v["enabled"] == "true"
 	a := &Action{
 		Name:      v["name"],
 		Kind:      Kind(v["kind"]),
 		Directory: v["directory"],
-		Enabled:   &disabled, // created paused; resume from the board after review
+		Enabled:   &enabled,
 	}
 	intVal := func(key, label string) (int, error) {
 		n, err := strconv.Atoi(strings.TrimSpace(v[key]))
@@ -368,14 +436,10 @@ func intCSV(s, label string) ([]int, error) {
 	return out, nil
 }
 
-// writeActionTOML generates a clean TOML file for a form-built action. It
-// never overwrites: the file name is the action name, and an existing file is
-// an error, not a merge.
-func writeActionTOML(dir string, a *Action) (string, error) {
-	path := filepath.Join(dir, a.Name+".toml")
-	if _, err := os.Stat(path); err == nil {
-		return "", fmt.Errorf("%s already exists", filepath.Base(path))
-	}
+// writeActionFile generates clean TOML for a form-built action and writes it
+// atomically to path. Overwrite policy is the caller's (trySave never clobbers
+// a file it isn't editing).
+func writeActionFile(path string, a *Action) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "name = %q\n", a.Name)
 	fmt.Fprintf(&b, "kind = %q\n", a.Kind)
@@ -412,22 +476,19 @@ func writeActionTOML(dir string, a *Action) (string, error) {
 			fmt.Fprintf(&b, "minute = %d\n", r.Minute)
 		}
 	}
-	tmp, err := os.CreateTemp(dir, ".new-*.toml")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".form-*.toml")
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(b.String()); err != nil {
 		tmp.Close()
-		return "", err
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return "", err
+		return err
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return "", err
-	}
-	return path, nil
+	return os.Rename(tmp.Name(), path)
 }
 
 func intListTOML(ns []int) string {
@@ -440,7 +501,11 @@ func intListTOML(ns []int) string {
 
 func (f *formModel) View() string {
 	var b strings.Builder
-	b.WriteString(styleHeader.Render("New action") + styleDim.Render("  ·  created paused — resume from the board") + "\n")
+	title, note := "New action", "starts paused until enabled"
+	if f.editPath != "" {
+		title, note = "Edit action", filepath.Base(f.editPath)
+	}
+	b.WriteString(styleHeader.Render(title) + styleDim.Render("  ·  "+note) + "\n")
 	if f.err != "" {
 		b.WriteString(styleError.Render(f.err) + "\n")
 	} else {

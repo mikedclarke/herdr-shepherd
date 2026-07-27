@@ -28,12 +28,14 @@ var (
 	styleAttn     = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 )
 
-// boardRow is one line of the board: a loaded action, or a broken TOML file
-// (which the loader already quarantines to its own file).
+// boardRow is one line of the board: a loaded action, a broken TOML file
+// (which the loader already quarantines to its own file), or the trailing
+// "+ new action" button row.
 type boardRow struct {
 	action  *Action
 	errFile string
 	errText string
+	isNew   bool
 }
 
 func (r boardRow) sourceFile(actionsDir string) string {
@@ -82,9 +84,6 @@ const boardRowsTop = 4
 
 func (m *boardModel) footerY() int {
 	y := boardRowsTop + len(m.rows) + 1
-	if len(m.rows) == 0 {
-		y++ // the "no actions" placeholder line
-	}
 	if m.status != "" {
 		y++
 	}
@@ -99,6 +98,7 @@ var footerSegments = []struct{ label, key string }{
 	{"r run", "r"},
 	{"enter details", "enter"},
 	{"e edit", "e"},
+	{"E toml", "E"},
 	{"n new", "n"},
 	{"q quit", "q"},
 }
@@ -138,19 +138,21 @@ func tickCmd() tea.Cmd {
 
 func (m *boardModel) reload() {
 	selected := ""
+	selectedNew := false
 	if m.cursor < len(m.rows) {
 		if a := m.rows[m.cursor].action; a != nil {
 			selected = a.Name
 		} else {
 			selected = m.rows[m.cursor].errFile
 		}
+		selectedNew = m.rows[m.cursor].isNew
 	}
 	actions, fileErrs, err := LoadActions(m.paths.ActionsDir())
 	if err != nil {
 		m.rows = []boardRow{{errFile: "", errText: err.Error()}}
 		return
 	}
-	rows := make([]boardRow, 0, len(actions)+len(fileErrs))
+	rows := make([]boardRow, 0, len(actions)+len(fileErrs)+1)
 	for _, a := range actions {
 		rows = append(rows, boardRow{action: a})
 	}
@@ -158,14 +160,19 @@ func (m *boardModel) reload() {
 		file, text, _ := strings.Cut(ferr.Error(), ":")
 		rows = append(rows, boardRow{errFile: strings.TrimSpace(file), errText: strings.TrimSpace(text)})
 	}
+	rows = append(rows, boardRow{isNew: true})
 	m.rows = rows
 	m.st = loadState(m.paths.StateFile())
 	m.now = time.Now()
 	m.cursor = 0
-	for i, r := range rows {
-		if (r.action != nil && r.action.Name == selected) || (r.action == nil && r.errFile == selected) {
-			m.cursor = i
-			break
+	if selectedNew {
+		m.cursor = len(rows) - 1
+	} else if selected != "" {
+		for i, r := range rows {
+			if (r.action != nil && r.action.Name == selected) || (r.action == nil && r.errFile == selected) {
+				m.cursor = i
+				break
+			}
 		}
 	}
 	if m.detail != "" {
@@ -247,6 +254,22 @@ func (m *boardModel) press(key string) (tea.Model, tea.Cmd) {
 		case "q", "esc", "enter":
 			m.detail = ""
 			m.history = nil
+		case "e":
+			if a := m.detailAction(); a != nil {
+				m.form = newFormModelForAction(a, m.paths.ActionsDir())
+			}
+		case "E":
+			if a := m.detailAction(); a != nil {
+				return m, openEditor(a.SourceFile)
+			}
+		case "r":
+			if m.selectDetailRow() {
+				return m, m.runSelected()
+			}
+		case " ":
+			if m.selectDetailRow() {
+				return m, m.toggleSelected()
+			}
 		case "ctrl+c":
 			return m, tea.Quit
 		}
@@ -268,47 +291,85 @@ func (m *boardModel) press(key string) (tea.Model, tea.Cmd) {
 	case "r":
 		return m, m.runSelected()
 	case "enter":
-		if r := m.selectedRow(); r != nil && r.action != nil {
+		r := m.selectedRow()
+		switch {
+		case r == nil:
+		case r.isNew:
+			m.form = newFormModel(m.paths.ActionsDir())
+		case r.action != nil:
 			m.detail = r.action.Name
 			m.history = actionHistory(m.paths.RunLogFile(), m.detail, historyDepth)
 		}
 	case "e":
 		return m, m.editSelected()
+	case "E":
+		if r := m.selectedRow(); r != nil && !r.isNew {
+			return m, openEditor(r.sourceFile(m.paths.ActionsDir()))
+		}
 	case "n":
 		m.form = newFormModel(m.paths.ActionsDir())
 	}
 	return m, nil
 }
 
-// handleMouse: wheel scrolls the selection; left click selects a row (a click
-// on the already-selected row opens details, as does right click); the footer
-// hints double as buttons; any click leaves the detail view.
+// detailAction resolves the action the detail view is showing.
+func (m *boardModel) detailAction() *Action {
+	for _, r := range m.rows {
+		if r.action != nil && r.action.Name == m.detail {
+			return r.action
+		}
+	}
+	return nil
+}
+
+// selectDetailRow points the cursor at the detail view's action so the shared
+// run/toggle helpers act on it.
+func (m *boardModel) selectDetailRow() bool {
+	for i, r := range m.rows {
+		if r.action != nil && r.action.Name == m.detail {
+			m.cursor = i
+			return true
+		}
+	}
+	return false
+}
+
+// handleMouse: wheel scrolls the selection; click selects a row, click again
+// opens details; the "+ new action" row and the footer hints act as buttons;
+// the detail view has its own button bar. (Right-click never reaches the TUI —
+// herdr keeps it for its pane context menu.)
 func (m *boardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action != tea.MouseActionPress {
 		return m, nil
 	}
 	if m.detail != "" {
-		if msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight {
-			return m.press("esc")
+		if msg.Button != tea.MouseButtonLeft {
+			return m, nil
 		}
-		return m, nil
+		if msg.Y == detailButtonsY {
+			if key := detailButtonKeyAt(msg.X, m.detailPaused()); key != "" {
+				return m.press(key)
+			}
+			return m, nil
+		}
+		return m.press("esc")
 	}
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
 		return m.press("up")
 	case tea.MouseButtonWheelDown:
 		return m.press("down")
-	case tea.MouseButtonLeft, tea.MouseButtonRight:
+	case tea.MouseButtonLeft:
 		row := msg.Y - boardRowsTop
 		if row >= 0 && row < len(m.rows) {
 			already := m.cursor == row
 			m.cursor = row
-			if msg.Button == tea.MouseButtonRight || already {
+			if m.rows[row].isNew || already {
 				return m.press("enter")
 			}
 			return m, nil
 		}
-		if msg.Button == tea.MouseButtonLeft && msg.Y == m.footerY() {
+		if msg.Y == m.footerY() {
 			if key := footerKeyAt(msg.X); key != "" {
 				return m.press(key)
 			}
@@ -317,10 +378,53 @@ func (m *boardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// The detail view's button bar sits directly under the title (row 1).
+const detailButtonsY = 1
+
+func detailButtons(paused bool) []struct{ label, key string } {
+	pause := struct{ label, key string }{"[ pause ]", " "}
+	if paused {
+		pause = struct{ label, key string }{"[ resume ]", " "}
+	}
+	return []struct{ label, key string }{
+		{"[ edit ]", "e"},
+		{"[ run now ]", "r"},
+		pause,
+		{"[ back ]", "esc"},
+	}
+}
+
+func detailButtonsText(paused bool) string {
+	var labels []string
+	for _, b := range detailButtons(paused) {
+		labels = append(labels, b.label)
+	}
+	return strings.Join(labels, "  ")
+}
+
+func detailButtonKeyAt(x int, paused bool) string {
+	start := 0
+	for _, b := range detailButtons(paused) {
+		end := start + len([]rune(b.label))
+		if x >= start && x < end {
+			return b.key
+		}
+		start = end + 2
+	}
+	return ""
+}
+
+func (m *boardModel) detailPaused() bool {
+	if a := m.detailAction(); a != nil {
+		return !a.IsEnabled()
+	}
+	return false
+}
+
 func (m *boardModel) toggleSelected() tea.Cmd {
 	r := m.selectedRow()
 	if r == nil || r.action == nil {
-		m.note("fix the file first (e to edit)")
+		m.rowHint(r)
 		return nil
 	}
 	target := !r.action.IsEnabled()
@@ -337,10 +441,19 @@ func (m *boardModel) toggleSelected() tea.Cmd {
 	return nil
 }
 
+// rowHint explains why an action key did nothing on a non-action row.
+func (m *boardModel) rowHint(r *boardRow) {
+	if r != nil && r.isNew {
+		m.note("press enter (or click) to create a new action")
+	} else {
+		m.note("fix the file first (e to edit)")
+	}
+}
+
 func (m *boardModel) runSelected() tea.Cmd {
 	r := m.selectedRow()
 	if r == nil || r.action == nil {
-		m.note("fix the file first (e to edit)")
+		m.rowHint(r)
 		return nil
 	}
 	a := r.action
@@ -368,12 +481,22 @@ func (m *boardModel) runSelected() tea.Cmd {
 	}
 }
 
+// editSelected opens the guided form for a valid action; broken files fall
+// back to the raw editor (the form cannot load them). E always goes raw.
 func (m *boardModel) editSelected() tea.Cmd {
 	r := m.selectedRow()
-	if r == nil {
+	switch {
+	case r == nil:
 		return nil
+	case r.isNew:
+		m.form = newFormModel(m.paths.ActionsDir())
+		return nil
+	case r.action != nil:
+		m.form = newFormModelForAction(r.action, m.paths.ActionsDir())
+		return nil
+	default:
+		return openEditor(r.sourceFile(m.paths.ActionsDir()))
 	}
-	return openEditor(r.sourceFile(m.paths.ActionsDir()))
 }
 
 func openEditor(path string) tea.Cmd {
@@ -432,9 +555,6 @@ func (m *boardModel) viewBoard() string {
 
 	b.WriteString(styleDim.Render(fmt.Sprintf("  %-22s %-9s %-22s %-20s %s", "NAME", "KIND", "SCHEDULE", "LAST RUN", "NEXT RUN")) + "\n")
 
-	if len(m.rows) == 0 {
-		b.WriteString(styleDim.Render("  no actions — press n to create one") + "\n")
-	}
 	for i, r := range m.rows {
 		line := m.renderRow(r)
 		if i == m.cursor {
@@ -452,6 +572,9 @@ func (m *boardModel) viewBoard() string {
 }
 
 func (m *boardModel) renderRow(r boardRow) string {
+	if r.isNew {
+		return styleDim.Render("+ new action…")
+	}
 	if r.action == nil {
 		return styleError.Render(fmt.Sprintf("✗ %-22s %s", truncate(r.errFile, 22), truncate(r.errText, 60)))
 	}
@@ -503,7 +626,8 @@ func (m *boardModel) viewDetail() string {
 		return styleDim.Render("action removed — press esc")
 	}
 	var b strings.Builder
-	b.WriteString(styleHeader.Render(a.Name) + styleDim.Render("  ·  "+string(a.Kind)) + "\n\n")
+	b.WriteString(styleHeader.Render(a.Name) + styleDim.Render("  ·  "+string(a.Kind)) + "\n")
+	b.WriteString(detailButtonsText(!a.IsEnabled()) + "\n\n")
 	field := func(k, v string) {
 		if v != "" {
 			b.WriteString(styleDim.Render(fmt.Sprintf("  %-12s", k)) + v + "\n")
@@ -539,7 +663,7 @@ func (m *boardModel) viewDetail() string {
 			statusGlyph(rec.Status), rec.Status,
 			styleDim.Render(truncate(firstLine(rec.Detail), 60))))
 	}
-	b.WriteString("\n" + styleDim.Render("esc back · q close"))
+	b.WriteString("\n" + styleDim.Render("e edit · E toml · r run · space pause/resume · esc back"))
 	return b.String()
 }
 

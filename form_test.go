@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -205,24 +206,127 @@ func TestFooterKeyAt(t *testing.T) {
 
 func TestMouseSelectsAndOpensDetails(t *testing.T) {
 	m := newBoardModel(boardFixture(t))
-	click := func(y int, btn tea.MouseButton) {
-		m.handleMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: btn, Y: y})
+	click := func(x, y int) {
+		m.handleMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	}
-	click(boardRowsTop+1, tea.MouseButtonLeft)
+	click(0, boardRowsTop+1)
 	if m.cursor != 1 || m.detail != "" {
 		t.Fatalf("first click should only select: cursor=%d detail=%q", m.cursor, m.detail)
 	}
-	click(boardRowsTop+1, tea.MouseButtonLeft)
+	click(0, boardRowsTop+1)
 	if m.detail != "sync" {
 		t.Fatalf("second click should open details, got %q", m.detail)
 	}
-	click(boardRowsTop, tea.MouseButtonLeft)
+	click(0, boardRowsTop+10)
 	if m.detail != "" {
-		t.Error("click in detail view should close it")
+		t.Error("click outside the button bar should close details")
 	}
-	click(boardRowsTop, tea.MouseButtonRight)
+	// A single click on the "+ new action" row opens the form.
+	click(0, boardRowsTop+3)
+	if m.form == nil {
+		t.Fatal("click on the new-action row did not open the form")
+	}
+	m.form = nil
+}
+
+func TestDetailButtons(t *testing.T) {
+	m := newBoardModel(boardFixture(t))
+	m.press("enter") // digest details
 	if m.detail != "digest" {
-		t.Errorf("right click should open details directly, got %q", m.detail)
+		t.Fatal("fixture: details not open")
+	}
+	view := m.viewDetail()
+	if !strings.Contains(view, "[ edit ]") || !strings.Contains(view, "[ run now ]") {
+		t.Errorf("detail button bar missing:\n%s", view)
+	}
+	// Click [ edit ] on the button bar row: zone 0 starts at x=0.
+	m.handleMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 1, Y: detailButtonsY})
+	if m.form == nil || m.form.editPath == "" {
+		t.Fatal("edit button did not open the form in edit mode")
+	}
+	m.form = nil
+
+	// Space in the detail view pauses the action.
+	m.detail = "digest"
+	m.press(" ")
+	if a := m.detailAction(); a == nil || a.IsEnabled() {
+		t.Error("space in detail view did not pause the action")
+	}
+	if !strings.Contains(m.viewDetail(), "[ resume ]") {
+		t.Error("button bar should offer resume once paused")
+	}
+	if key := detailButtonKeyAt(len([]rune("[ edit ]  [ run now ]  ")), true); key != " " {
+		t.Errorf("pause/resume zone wrong: %q", key)
+	}
+}
+
+func TestBoardEOpensFormForActions(t *testing.T) {
+	m := newBoardModel(boardFixture(t))
+	m.press("e")
+	if m.form == nil || m.form.editPath == "" || m.form.values["name"] != "digest" {
+		t.Fatalf("e did not open the edit form for digest: %+v", m.form)
+	}
+	m.form = nil
+	// Broken rows cannot load into the form; e falls back to the raw editor.
+	m.cursor = 2
+	if cmd := m.editSelected(); cmd == nil || m.form != nil {
+		t.Error("e on a broken row should return an editor command, not a form")
+	}
+}
+
+func TestFormEditPrefillSaveAndRename(t *testing.T) {
+	p := boardFixture(t)
+	m := newBoardModel(p)
+	a := m.rows[0].action // digest, enabled
+	f := newFormModelForAction(a, p.ActionsDir())
+	if f.values["name"] != "digest" || f.values["enabled"] != "true" || f.values["preset"] != "weekdays" || f.values["hours"] != "6" {
+		t.Fatalf("prefill wrong: %+v", f.values)
+	}
+
+	// Edit in place: change the minute, keep the name; enabled must survive.
+	f.values["minute"] = "30"
+	if done, saved := f.trySave(); !done || !saved {
+		t.Fatalf("edit save failed: %s", f.err)
+	}
+	actions, fileErrs, _ := LoadActions(p.ActionsDir())
+	if len(fileErrs) != 1 { // the fixture's broken.toml only
+		t.Fatalf("unexpected file errors: %v", fileErrs)
+	}
+	var edited *Action
+	for _, got := range actions {
+		if got.Name == "digest" {
+			edited = got
+		}
+	}
+	if edited == nil || edited.Routine.Minute != 30 || !edited.IsEnabled() {
+		t.Fatalf("edit not persisted: %+v", edited)
+	}
+
+	// Rename: writes the new file and removes the old one.
+	f2 := newFormModelForAction(edited, p.ActionsDir())
+	f2.values["name"] = "digest-am"
+	if done, saved := f2.trySave(); !done || !saved {
+		t.Fatalf("rename save failed: %s", f2.err)
+	}
+	if _, err := os.Stat(filepath.Join(p.ActionsDir(), "digest.toml")); !os.IsNotExist(err) {
+		t.Error("old file left behind after rename")
+	}
+	if _, err := os.Stat(filepath.Join(p.ActionsDir(), "digest-am.toml")); err != nil {
+		t.Error("renamed file missing")
+	}
+
+	// Renaming onto an existing action must refuse.
+	actions, _, _ = LoadActions(p.ActionsDir())
+	var am *Action
+	for _, got := range actions {
+		if got.Name == "digest-am" {
+			am = got
+		}
+	}
+	f3 := newFormModelForAction(am, p.ActionsDir())
+	f3.values["name"] = "sync"
+	if done, _ := f3.trySave(); done {
+		t.Fatal("rename onto an existing action was allowed")
 	}
 }
 

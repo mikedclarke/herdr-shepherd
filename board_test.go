@@ -41,21 +41,24 @@ preset = "daily"
 
 func TestBoardModelRowsAndCursor(t *testing.T) {
 	m := newBoardModel(boardFixture(t))
-	if len(m.rows) != 3 {
-		t.Fatalf("expected 3 rows (2 actions + 1 broken), got %d", len(m.rows))
+	if len(m.rows) != 4 {
+		t.Fatalf("expected 4 rows (2 actions + 1 broken + new button), got %d", len(m.rows))
 	}
 	if m.rows[2].action != nil || m.rows[2].errFile != "broken.toml" {
-		t.Fatalf("broken file should be the last row: %+v", m.rows[2])
+		t.Fatalf("broken file should precede the new-action row: %+v", m.rows[2])
+	}
+	if !m.rows[3].isNew {
+		t.Fatalf("last row should be the new-action button: %+v", m.rows[3])
 	}
 
 	m.press("k")
 	if m.cursor != 0 {
 		t.Errorf("cursor moved above the first row: %d", m.cursor)
 	}
-	m.press("j")
-	m.press("j")
-	m.press("j")
-	if m.cursor != 2 {
+	for i := 0; i < 4; i++ {
+		m.press("j")
+	}
+	if m.cursor != 3 {
 		t.Errorf("cursor moved past the last row: %d", m.cursor)
 	}
 }
