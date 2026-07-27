@@ -1,6 +1,6 @@
 # herdr-shepherd
 
-Scheduled agent sessions for [herdr](https://herdr.dev): heartbeats, cron routines, and scripts — launched on time, in the right directory, visible in the herd.
+Scheduled agent sessions for [herdr](https://herdr.dev): heartbeats, cron routines, and scripts scheduled, in the right directory, visible in the herd.
 
 herdr shows you what your agents are doing. Shepherd decides when they run.
 
@@ -27,11 +27,11 @@ sh scripts/build.sh
 herdr plugin link /path/to/herdr-shepherd
 ```
 
-The plugin's startup hook spawns the scheduler daemon when the herdr server starts, and registers `Shepherd: Board` and `Shepherd: Status` as plugin actions. Herdr has no built-in menu for plugin actions — reach them with a keybinding (below) or `herdr plugin action invoke`. After a fresh `plugin link`, run `./bin/herdr-shepherd daemon --detach` once to start it immediately — a kernel lock keeps any two daemons from double-firing, however they were started.
+The plugin's startup hook spawns the scheduler daemon when the herdr server starts, and registers `Shepherd: Board` and `Shepherd: Status` as plugin actions. Herdr has no built-in menu for plugin actions, reach them with a keybinding (below) or `herdr plugin action invoke`. After a fresh `plugin link`, run `./bin/herdr-shepherd daemon --detach` once to start it immediately — a kernel lock keeps any two daemons from double-firing, however they were started.
 
 ## The board
 
-The board is a live status view of every action: schedule, last run, and next run, plus daemon liveness — refreshed every two seconds, so a finishing run shows up on its own.
+The board is a live status view of every action: schedule, last run, and next run, plus daemon liveness. Refreshed every two seconds, so a finishing run shows up on its own.
 
 Open it by binding a key in herdr's `config.toml`:
 
