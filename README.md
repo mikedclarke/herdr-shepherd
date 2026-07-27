@@ -27,7 +27,15 @@ sh scripts/build.sh
 herdr plugin link /path/to/herdr-shepherd
 ```
 
-The plugin's startup hook spawns the scheduler daemon when the herdr server starts, and registers a `Shepherd: Status` action in herdr's plugin action menu. After a fresh `plugin link`, run `./bin/herdr-shepherd daemon --detach` once to start it immediately — a kernel lock keeps any two daemons from double-firing, however they were started.
+The plugin's startup hook spawns the scheduler daemon when the herdr server starts, and registers `Shepherd: Board` and `Shepherd: Status` actions in herdr's plugin action menu. After a fresh `plugin link`, run `./bin/herdr-shepherd daemon --detach` once to start it immediately — a kernel lock keeps any two daemons from double-firing, however they were started.
+
+## The board
+
+`Shepherd: Board` (herdr's plugin action menu, or `herdr-shepherd board` in any terminal) opens a live status board: every action with its schedule, last run, and next run, plus daemon liveness — refreshed every two seconds, so a finishing run shows up on its own.
+
+From the board: `space` pauses/resumes the selected action (an in-place edit of its TOML — comments and formatting survive), `r` fires it now with manual-run semantics, `enter` shows its full config and recent run history, `e` opens its TOML in `$EDITOR`, and `n` creates a new action from a commented template and drops you into the editor. Broken TOML files appear as rows with their parse error, so a typo is something you see, not something you discover a missed run later.
+
+Invoked from the action menu it opens as a zoomed herdr pane and closes back to where you were; typed in a shell it runs right there.
 
 ## Configuring actions
 
@@ -94,6 +102,7 @@ Agent actions also accept `cli = "claude" | "codex"`, `model = "..."`, `enabled 
 
 ```
 herdr-shepherd daemon         # the scheduler (the manifest startup hook runs daemon --detach)
+herdr-shepherd board          # the live status board (pause/resume, run now, details)
 herdr-shepherd list           # actions, schedules, last/next runs
 herdr-shepherd run <name>     # fire an action now
 herdr-shepherd status         # daemon liveness + next run (--notify for a herdr toast)

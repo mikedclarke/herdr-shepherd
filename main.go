@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>
@@ -16,6 +16,8 @@ func usage(w *os.File) {
   daemon         Run the scheduler in the foreground
     --detach     Spawn the scheduler detached and exit (the manifest startup
                  hook uses this; logs go to shepherd.log in the state dir)
+  board          Open the status board (a live TUI: pause/resume, run now,
+                 details; opens as a herdr pane when invoked without a TTY)
   list           List actions with their schedules and next runs
   run <name>     Fire an action now
   status         Show daemon liveness and the next scheduled run
@@ -36,6 +38,11 @@ func main() {
 		} else {
 			err = runDaemon()
 		}
+	case "board":
+		err = cmdBoard()
+	case "board-ui":
+		// Internal: the manifest's pane entrypoint (herdr hosts the TUI).
+		err = runBoardUI()
 	case "list":
 		err = cmdList()
 	case "run":

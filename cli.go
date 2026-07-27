@@ -176,24 +176,35 @@ func cmdRun(name string) error {
 		return cmd.Run()
 	}
 
-	client, err := newHerdrClient()
+	wsID, err := startAgentRun(action)
 	if err != nil {
-		return err
-	}
-	command, err := action.AgentCommand()
-	if err != nil {
-		return err
-	}
-	wsID, paneID, err := client.workspaceCreate(action.Dir(), "Shepherd · "+action.Name, map[string]string{
-		"SHEPHERD_ACTION": action.Name,
-	})
-	if err != nil {
-		return err
-	}
-	time.Sleep(shellSettle)
-	if err := client.runCommand(paneID, command); err != nil {
 		return err
 	}
 	fmt.Printf("Started %s in workspace %s\n", action.Name, wsID)
 	return nil
+}
+
+// startAgentRun opens a manual run's workspace and submits the agent command.
+// Shared by `run` and the board; both keep manual-run semantics (no watcher,
+// no auto-close, no schedule coordination).
+func startAgentRun(a *Action) (workspaceID string, err error) {
+	client, err := newHerdrClient()
+	if err != nil {
+		return "", err
+	}
+	command, err := a.AgentCommand()
+	if err != nil {
+		return "", err
+	}
+	wsID, paneID, err := client.workspaceCreate(a.Dir(), "Shepherd · "+a.Name, map[string]string{
+		"SHEPHERD_ACTION": a.Name,
+	})
+	if err != nil {
+		return "", err
+	}
+	time.Sleep(shellSettle)
+	if err := client.runCommand(paneID, command); err != nil {
+		return "", err
+	}
+	return wsID, nil
 }

@@ -51,6 +51,10 @@ type Action struct {
 	Schedule  *RoutineSpec  `toml:"schedule"`
 	// Deprecated alias for [schedule], kept for existing configs.
 	Routine RoutineSpec `toml:"routine"`
+
+	// SourceFile is the TOML file this action was loaded from; the board edits
+	// enabled-state in place through it.
+	SourceFile string `toml:"-"`
 }
 
 func (a *Action) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
@@ -247,6 +251,7 @@ func LoadActions(dir string) (actions []*Action, fileErrs []error, err error) {
 			continue
 		}
 		a.applyDefaults()
+		a.SourceFile = path
 		if err := a.validate(); err != nil {
 			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", name, err))
 			continue

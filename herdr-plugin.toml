@@ -1,7 +1,7 @@
 id = "mikedclarke.herdr-shepherd"
 name = "Shepherd"
 # Keep in sync with `version` in main.go.
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.0"
 description = "Scheduled agent sessions: heartbeats, cron routines, and scripts, launched as visible herdr workspaces."
 platforms = ["linux", "macos"]
@@ -21,3 +21,18 @@ id = "status"
 title = "Shepherd: Status"
 platforms = ["linux", "macos"]
 command = ["./bin/herdr-shepherd", "status", "--notify"]
+
+# The status board. The action runs server-side (no terminal), so it asks herdr
+# to host the `board` pane entrypoint below as a zoomed plugin pane.
+[[actions]]
+id = "board"
+title = "Shepherd: Board"
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-shepherd", "board"]
+
+[[panes]]
+id = "board"
+title = "Shepherd"
+placement = "zoomed"
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-shepherd", "board-ui"]
