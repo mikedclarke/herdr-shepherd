@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func boardFixture(t *testing.T) paths {
@@ -41,10 +39,6 @@ preset = "daily"
 	return paths{ConfigDir: cfg, StateDir: state}
 }
 
-func keyRunes(r rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
-}
-
 func TestBoardModelRowsAndCursor(t *testing.T) {
 	m := newBoardModel(boardFixture(t))
 	if len(m.rows) != 3 {
@@ -54,13 +48,13 @@ func TestBoardModelRowsAndCursor(t *testing.T) {
 		t.Fatalf("broken file should be the last row: %+v", m.rows[2])
 	}
 
-	m.handleKey(keyRunes('k'))
+	m.press("k")
 	if m.cursor != 0 {
 		t.Errorf("cursor moved above the first row: %d", m.cursor)
 	}
-	m.handleKey(keyRunes('j'))
-	m.handleKey(keyRunes('j'))
-	m.handleKey(keyRunes('j'))
+	m.press("j")
+	m.press("j")
+	m.press("j")
 	if m.cursor != 2 {
 		t.Errorf("cursor moved past the last row: %d", m.cursor)
 	}
@@ -72,7 +66,7 @@ func TestBoardToggleWritesFile(t *testing.T) {
 	if m.rows[0].action.Name != "digest" || !m.rows[0].action.IsEnabled() {
 		t.Fatalf("fixture: expected enabled digest first, got %+v", m.rows[0].action)
 	}
-	m.handleKey(keyRunes(' '))
+	m.press(" ")
 	data := mustRead(t, filepath.Join(p.ActionsDir(), "digest.toml"))
 	if !strings.Contains(string(data), "enabled = false") {
 		t.Errorf("toggle did not reach the file:\n%s", data)
@@ -88,7 +82,7 @@ func TestBoardToggleWritesFile(t *testing.T) {
 func TestBoardToggleOnBrokenRowIsSafe(t *testing.T) {
 	m := newBoardModel(boardFixture(t))
 	m.cursor = 2
-	m.handleKey(keyRunes(' '))
+	m.press(" ")
 	if m.status == "" {
 		t.Error("expected a hint status for a broken row")
 	}
@@ -115,7 +109,7 @@ func TestBoardViewsRender(t *testing.T) {
 			t.Errorf("board view missing %q:\n%s", want, view)
 		}
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m.press("enter")
 	if m.detail != "digest" {
 		t.Fatalf("enter did not open details: %q", m.detail)
 	}
@@ -125,7 +119,7 @@ func TestBoardViewsRender(t *testing.T) {
 			t.Errorf("detail view missing %q:\n%s", want, detail)
 		}
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m.press("esc")
 	if m.detail != "" {
 		t.Error("esc did not close details")
 	}

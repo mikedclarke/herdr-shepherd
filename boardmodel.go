@@ -72,6 +72,56 @@ type boardModel struct {
 	status   string
 	statusAt time.Time
 	running  map[string]bool // manual script runs in flight
+	form     *formModel      // non-nil while the new-action form is open
+}
+
+// Board layout rows (see viewBoard): title 0, actions dir 1, blank 2, column
+// header 3, action rows from 4. The footer's y depends on row count and the
+// status line; footerY computes it to match viewBoard exactly.
+const boardRowsTop = 4
+
+func (m *boardModel) footerY() int {
+	y := boardRowsTop + len(m.rows) + 1
+	if len(m.rows) == 0 {
+		y++ // the "no actions" placeholder line
+	}
+	if m.status != "" {
+		y++
+	}
+	return y
+}
+
+// footerSegments are the footer hints; each is also a click target that
+// presses its key.
+var footerSegments = []struct{ label, key string }{
+	{"↑↓ move", ""},
+	{"space pause/resume", " "},
+	{"r run", "r"},
+	{"enter details", "enter"},
+	{"e edit", "e"},
+	{"n new", "n"},
+	{"q quit", "q"},
+}
+
+func footerText() string {
+	labels := make([]string, len(footerSegments))
+	for i, s := range footerSegments {
+		labels[i] = s.label
+	}
+	return strings.Join(labels, " · ")
+}
+
+// footerKeyAt maps a click x-position on the footer line to its segment's key.
+func footerKeyAt(x int) string {
+	start := 0
+	for _, s := range footerSegments {
+		end := start + len([]rune(s.label))
+		if x >= start && x < end {
+			return s.key
+		}
+		start = end + 3 // " · "
+	}
+	return ""
 }
 
 func newBoardModel(p paths) *boardModel {
@@ -139,8 +189,11 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		return m, nil
 	case tickMsg:
-		m.reload()
+		if m.form == nil {
+			m.reload()
+		}
 		if m.status != "" && time.Since(m.statusAt) > statusLinger {
 			m.status = ""
 		}
@@ -152,25 +205,43 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.note(fmt.Sprintf("%s completed", msg.name))
 		}
+		return m, nil
+	case editorDoneMsg:
+		if msg.err != nil {
+			m.note(styleError.Render(fmt.Sprintf("editor: %v", msg.err)))
+		}
+		m.reload()
+		return m, nil
 	case agentStartedMsg:
 		if msg.err != nil {
 			m.note(styleError.Render(fmt.Sprintf("%s: %v", msg.name, msg.err)))
 		} else {
 			m.note(fmt.Sprintf("%s started in workspace %s", msg.name, msg.ws))
 		}
-	case editorDoneMsg:
-		if msg.err != nil {
-			m.note(styleError.Render(fmt.Sprintf("editor: %v", msg.err)))
+		return m, nil
+	}
+
+	if m.form != nil {
+		if done, saved := m.form.update(msg); done {
+			m.form = nil
+			m.reload()
+			if saved {
+				m.note("action created (paused) — space resumes it")
+			}
 		}
-		m.reload()
+		return m, nil
+	}
+
+	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		return m.press(msg.String())
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 	return m, nil
 }
 
-func (m *boardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
+func (m *boardModel) press(key string) (tea.Model, tea.Cmd) {
 	if m.detail != "" {
 		switch key {
 		case "q", "esc", "enter":
@@ -204,12 +275,44 @@ func (m *boardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		return m, m.editSelected()
 	case "n":
-		path, err := newActionFile(m.paths.ActionsDir())
-		if err != nil {
-			m.note(styleError.Render(err.Error()))
+		m.form = newFormModel(m.paths.ActionsDir())
+	}
+	return m, nil
+}
+
+// handleMouse: wheel scrolls the selection; left click selects a row (a click
+// on the already-selected row opens details, as does right click); the footer
+// hints double as buttons; any click leaves the detail view.
+func (m *boardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	if m.detail != "" {
+		if msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight {
+			return m.press("esc")
+		}
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		return m.press("up")
+	case tea.MouseButtonWheelDown:
+		return m.press("down")
+	case tea.MouseButtonLeft, tea.MouseButtonRight:
+		row := msg.Y - boardRowsTop
+		if row >= 0 && row < len(m.rows) {
+			already := m.cursor == row
+			m.cursor = row
+			if msg.Button == tea.MouseButtonRight || already {
+				return m.press("enter")
+			}
 			return m, nil
 		}
-		return m, openEditor(path)
+		if msg.Button == tea.MouseButtonLeft && msg.Y == m.footerY() {
+			if key := footerKeyAt(msg.X); key != "" {
+				return m.press(key)
+			}
+		}
 	}
 	return m, nil
 }
@@ -274,18 +377,30 @@ func (m *boardModel) editSelected() tea.Cmd {
 }
 
 func openEditor(path string) tea.Cmd {
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-	c := exec.Command("sh", "-c", editor+" "+shellQuote(path))
+	c := exec.Command("sh", "-c", editorCommand()+" "+shellQuote(path))
 	return tea.ExecProcess(c, func(err error) tea.Msg { return editorDoneMsg{err: err} })
 }
 
+// editorCommand honours $VISUAL/$EDITOR; with neither set it prefers nano,
+// which keeps its save/exit keys on screen — never strand a user in vi they
+// didn't ask for.
+func editorCommand() string {
+	if e := os.Getenv("VISUAL"); e != "" {
+		return e
+	}
+	if e := os.Getenv("EDITOR"); e != "" {
+		return e
+	}
+	if _, err := exec.LookPath("nano"); err == nil {
+		return "nano"
+	}
+	return "vi"
+}
+
 func (m *boardModel) View() string {
+	if m.form != nil {
+		return m.form.View()
+	}
 	if m.detail != "" {
 		return m.viewDetail()
 	}
@@ -332,7 +447,7 @@ func (m *boardModel) viewBoard() string {
 	if m.status != "" {
 		b.WriteString(m.status + "\n")
 	}
-	b.WriteString(styleDim.Render("↑↓ move · space pause/resume · r run now · enter details · e edit · n new · q quit"))
+	b.WriteString(styleDim.Render(footerText()))
 	return b.String()
 }
 

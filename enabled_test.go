@@ -120,33 +120,6 @@ func TestSetActionEnabledPreservesMode(t *testing.T) {
 	}
 }
 
-func TestNewActionFile(t *testing.T) {
-	dir := t.TempDir()
-	first, err := newActionFile(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := newActionFile(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first == second {
-		t.Fatalf("duplicate path %s", first)
-	}
-	actions, fileErrs, err := LoadActions(dir)
-	if err != nil || len(fileErrs) > 0 {
-		t.Fatalf("template does not load cleanly: %v %v", err, fileErrs)
-	}
-	if len(actions) != 2 {
-		t.Fatalf("expected 2 template actions, got %d", len(actions))
-	}
-	for _, a := range actions {
-		if a.IsEnabled() {
-			t.Errorf("%s: template must start disabled", a.Name)
-		}
-	}
-}
-
 func TestLoadActionsRecordsSourceFile(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "digest.toml", "name = \"digest\"\nkind = \"script\"\ndirectory = \"~\"\ncommand = \"true\"\n")

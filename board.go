@@ -39,7 +39,9 @@ func cmdBoard() error {
 func runBoardUI() error {
 	p := resolvePaths()
 	m := newBoardModel(p)
-	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	// Mouse cell motion: herdr forwards clicks and wheel events to the pane
+	// once we ask for them, so the board works by touch as well as keys.
+	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
