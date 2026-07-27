@@ -27,15 +27,27 @@ sh scripts/build.sh
 herdr plugin link /path/to/herdr-shepherd
 ```
 
-The plugin's startup hook spawns the scheduler daemon when the herdr server starts, and registers `Shepherd: Board` and `Shepherd: Status` actions in herdr's plugin action menu. After a fresh `plugin link`, run `./bin/herdr-shepherd daemon --detach` once to start it immediately — a kernel lock keeps any two daemons from double-firing, however they were started.
+The plugin's startup hook spawns the scheduler daemon when the herdr server starts, and registers `Shepherd: Board` and `Shepherd: Status` as plugin actions. Herdr has no built-in menu for plugin actions — reach them with a keybinding (below) or `herdr plugin action invoke`. After a fresh `plugin link`, run `./bin/herdr-shepherd daemon --detach` once to start it immediately — a kernel lock keeps any two daemons from double-firing, however they were started.
 
 ## The board
 
-`Shepherd: Board` (herdr's plugin action menu, or `herdr-shepherd board` in any terminal) opens a live status board: every action with its schedule, last run, and next run, plus daemon liveness — refreshed every two seconds, so a finishing run shows up on its own.
+The board is a live status view of every action: schedule, last run, and next run, plus daemon liveness — refreshed every two seconds, so a finishing run shows up on its own.
+
+Open it by binding a key in herdr's `config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+a"                # unbound by default
+type = "plugin_action"
+command = "mikedclarke.herdr-shepherd.board"
+description = "shepherd: status board"
+```
+
+(then `herdr server reload-config`), or with `herdr plugin action invoke board --plugin mikedclarke.herdr-shepherd`, or by typing `herdr-shepherd board` in any terminal.
 
 From the board: `space` pauses/resumes the selected action (an in-place edit of its TOML — comments and formatting survive), `r` fires it now with manual-run semantics, `enter` shows its full config and recent run history, `e` opens its TOML in `$EDITOR`, and `n` creates a new action from a commented template and drops you into the editor. Broken TOML files appear as rows with their parse error, so a typo is something you see, not something you discover a missed run later.
 
-Invoked from the action menu it opens as a zoomed herdr pane and closes back to where you were; typed in a shell it runs right there.
+Invoked as a plugin action it opens as a zoomed herdr pane and closes back to where you were; typed in a shell it runs right there.
 
 ## Configuring actions
 
