@@ -20,6 +20,8 @@ const (
 	startTimeout = 2 * time.Minute
 	// agent.wait is sliced so the loop can re-check its watch deadline.
 	waitSliceMS = 60_000
+	// Phase-1 waits are sliced shorter so the start deadline stays responsive.
+	startWaitSliceMS = 15_000
 	// A routine occurrence older than this is dropped, not run late — waking
 	// a slept machine at 08:55 must not fire the 06:00 jobs (see due).
 	catchUpGrace = 10 * time.Minute
@@ -27,14 +29,31 @@ const (
 	// (herdr restarting, socket briefly down).
 	maxStartAttempts = 3
 	shellSettle      = 1 * time.Second
+	pollPause        = 1 * time.Second
 	outputTailMax    = 4096
 )
 
+// herdrAPI is the slice of the herdr socket API the daemon uses; it exists so
+// agent-watch logic is testable against a scripted fake.
+type herdrAPI interface {
+	workspaceCreate(cwd, label string, env map[string]string) (workspaceID, paneID string, err error)
+	workspaceClose(workspaceID string) error
+	runCommand(paneID, command string) error
+	agentWait(target string, until []string, timeoutMS int) (string, error)
+	paneExists(paneID string) bool
+	notify(title, body, sound string) error
+}
+
 type daemon struct {
 	paths   paths
-	client  *herdrClient
+	client  herdrAPI
 	state   *daemonState
 	started time.Time
+
+	// Timing knobs; runDaemon sets the real values, tests shrink them.
+	startTimeout time.Duration
+	settle       time.Duration
+	pause        time.Duration
 
 	mu             sync.Mutex
 	running        map[string]bool
@@ -63,6 +82,9 @@ func runDaemon() error {
 		client:         client,
 		state:          loadState(p.StateFile()),
 		started:        time.Now(),
+		startTimeout:   startTimeout,
+		settle:         shellSettle,
+		pause:          pollPause,
 		running:        map[string]bool{},
 		startFailures:  map[string]int{},
 		notifiedErrors: map[string]bool{},
@@ -304,29 +326,42 @@ func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
 	if err != nil {
 		return "error", "workspace create: " + err.Error(), true
 	}
-	time.Sleep(shellSettle)
+	time.Sleep(d.settle)
 	if err := d.client.runCommand(paneID, command); err != nil {
 		d.client.workspaceClose(wsID)
 		return "error", "run command: " + err.Error(), true
 	}
 
-	// Phase 1: wait for herdr to detect the agent at all. agent.wait errors
-	// with agent_not_found (instantly, not a timeout) until detection.
-	startDeadline := time.Now().Add(startTimeout)
+	// Phase 1: wait for herdr to detect the agent and see it actually start.
+	// agent.wait errors with agent_not_found (instantly, not a timeout) until
+	// detection — and a freshly launched agent then reports idle for several
+	// seconds before its first turn registers as working. Accepting idle or
+	// done here ends the watch seconds into a real run (a stalled routine was
+	// once logged "completed" 17s after firing, silencing every later alert),
+	// so only working/blocked count as started. The short done-only probe on
+	// timeout keeps a run that finishes between waits from being misreported
+	// as never starting; a pane that stays idle past the deadline is surfaced
+	// as attention, not success.
+	startDeadline := time.Now().Add(d.startTimeout)
 	state := ""
 	for state == "" {
-		state, err = d.client.agentWait(paneID, []string{"working", "done", "idle", "blocked"}, 15_000)
-		if err != nil {
-			if time.Now().After(startDeadline) {
-				d.notify("Shepherd: "+a.Name+" did not start", "No agent detected in its pane", "none")
-				return "attention", "agent not detected within start timeout", false
+		s, err := d.client.agentWait(paneID, []string{"working", "blocked"}, startWaitSliceMS)
+		switch {
+		case err == nil:
+			state = s
+		case isTimeout(err):
+			if probe, perr := d.client.agentWait(paneID, []string{"done"}, 1_000); perr == nil {
+				state = probe
 			}
-			if isAgentNotFound(err) || isTimeout(err) {
-				time.Sleep(2 * time.Second)
-				continue
-			}
+		case isAgentNotFound(err):
+			time.Sleep(d.pause)
+		default:
 			d.client.workspaceClose(wsID)
 			return "error", "agent wait: " + err.Error(), true
+		}
+		if state == "" && time.Now().After(startDeadline) {
+			d.notify("Shepherd: "+a.Name+" did not start", "No agent activity in its pane", "none")
+			return "attention", "agent never started working within start timeout", false
 		}
 	}
 
@@ -347,7 +382,7 @@ func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
 			d.notify("Shepherd: "+a.Name+" still running", fmt.Sprintf("Exceeded watch window of %dm", a.WatchMinutes), "none")
 			return "attention", "watch window exceeded; session left open", false
 		}
-		time.Sleep(time.Second)
+		time.Sleep(d.pause)
 		state, err = d.client.agentWait(paneID, until, waitSliceMS)
 		if err != nil {
 			if isTimeout(err) {
