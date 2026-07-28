@@ -25,6 +25,9 @@ func (w *WorkingHours) validate() error {
 	if w.StartHour < 0 || w.StartHour > 23 || w.EndHour < 0 || w.EndHour > 24 {
 		return fmt.Errorf("working_hours hours out of range")
 	}
+	if w.StartHour == w.EndHour {
+		return fmt.Errorf("working_hours start_hour and end_hour must differ (use 0 and 24 for all day)")
+	}
 	return nil
 }
 
@@ -71,8 +74,10 @@ func (h HeartbeatSpec) NextHeartbeat(last time.Time) time.Time {
 	return last.Add(interval)
 }
 
+// cronExpression assumes a validated spec: validate rejects out-of-range
+// fields rather than clamping them into a time the user never asked for.
 func (r RoutineSpec) cronExpression() (*cronSchedule, error) {
-	minute := clamp(r.Minute, 0, 59)
+	minute := r.Minute
 	hours := "*"
 	if len(r.Hours) > 0 {
 		hours = joinInts(uniqueSorted(r.Hours, 0, 23))
@@ -90,7 +95,7 @@ func (r RoutineSpec) cronExpression() (*cronSchedule, error) {
 		}
 		expr = fmt.Sprintf("%d %s * * %s", minute, hours, days)
 	case "monthly":
-		expr = fmt.Sprintf("%d %s %d * *", minute, hours, clamp(r.MonthDay, 1, 28))
+		expr = fmt.Sprintf("%d %s %d * *", minute, hours, r.MonthDay)
 	case "cron":
 		expr = strings.TrimSpace(r.Cron)
 	default:
@@ -108,6 +113,15 @@ func (r RoutineSpec) NextRoutine(t time.Time) (time.Time, error) {
 	return sched.Next(t)
 }
 
+// nextOccurrence is the one schedule computation: the daemon's due check and
+// the board's NEXT RUN column must not disagree about when an action runs.
+func nextOccurrence(a *Action, anchor time.Time) (time.Time, error) {
+	if a.Kind == KindHeartbeat {
+		return a.Heartbeat.NextHeartbeat(anchor), nil
+	}
+	return a.Routine.NextRoutine(anchor)
+}
+
 // sameWallClock reports whether two instants show the same local date, hour,
 // and minute. On a DST fall-back day the minute scan meets the repeated hour
 // twice; comparing wall clocks lets the caller drop the second occurrence.
@@ -115,16 +129,6 @@ func sameWallClock(a, b time.Time) bool {
 	ay, am, ad := a.Date()
 	by, bm, bd := b.Date()
 	return ay == by && am == bm && ad == bd && a.Hour() == b.Hour() && a.Minute() == b.Minute()
-}
-
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 func uniqueSorted(vals []int, lo, hi int) []int {
@@ -229,8 +233,8 @@ func parseCronField(field string, lo, hi int) (map[int]bool, error) {
 	return set, nil
 }
 
-func (c *cronSchedule) matches(t time.Time) bool {
-	if !c.minute[t.Minute()] || !c.hour[t.Hour()] || !c.month[int(t.Month())] {
+func (c *cronSchedule) matchesDay(t time.Time) bool {
+	if !c.month[int(t.Month())] {
 		return false
 	}
 	domMatch := c.dom[t.Day()]
@@ -247,15 +251,29 @@ func (c *cronSchedule) matches(t time.Time) bool {
 	}
 }
 
-// Next scans minute-by-minute for the first match strictly after t, capped at
-// 366 days (a valid expression always matches within a year).
+func (c *cronSchedule) matches(t time.Time) bool {
+	return c.minute[t.Minute()] && c.hour[t.Hour()] && c.matchesDay(t)
+}
+
+// scanYears bounds the search. Four years always contains a leap day, so
+// `0 9 29 2 *` resolves from a non-leap year instead of looking unsatisfiable.
+const scanYears = 4
+
+// Next scans for the first match strictly after t, minute-by-minute inside
+// days the expression can match and a day at a time through the rest.
 func (c *cronSchedule) Next(t time.Time) (time.Time, error) {
 	candidate := t.Truncate(time.Minute).Add(time.Minute)
-	for i := 0; i < 366*24*60; i++ {
+	limit := candidate.AddDate(scanYears, 0, 0)
+	for candidate.Before(limit) {
+		if !c.matchesDay(candidate) {
+			y, m, d := candidate.Date()
+			candidate = time.Date(y, m, d+1, 0, 0, 0, 0, candidate.Location())
+			continue
+		}
 		if c.matches(candidate) {
 			return candidate, nil
 		}
 		candidate = candidate.Add(time.Minute)
 	}
-	return time.Time{}, fmt.Errorf("no cron match within a year")
+	return time.Time{}, fmt.Errorf("no cron match within %d years", scanYears)
 }

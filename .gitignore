@@ -6,6 +6,7 @@ MEMORY.md
 LEARNINGS.md
 
 # Build artifacts
+/herdr-shepherd
 bin/
 dist/
 

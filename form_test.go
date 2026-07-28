@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,8 +71,8 @@ func TestFormPresetFieldsFollowPreset(t *testing.T) {
 func TestFormSaveRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	f := newFormModel(dir)
-	f.values["name"] = "digest"
-	f.values["prompt"] = "do the digest"
+	f.values["name"] = "nightly-report"
+	f.values["prompt"] = "write the nightly report"
 	f.values["preset"] = "weekdays"
 	f.values["hours"] = "6, 18"
 	f.values["minute"] = "15"
@@ -86,7 +87,7 @@ func TestFormSaveRoundTrip(t *testing.T) {
 		t.Fatalf("saved file does not load: %v %v", err, fileErrs)
 	}
 	a := actions[0]
-	if a.Name != "digest" || a.Kind != KindRoutine || a.IsEnabled() {
+	if a.Name != "nightly-report" || a.Kind != KindRoutine || a.IsEnabled() {
 		t.Errorf("wrong action written: %+v", a)
 	}
 	if len(a.Routine.Hours) != 2 || a.Routine.Hours[0] != 6 || a.Routine.Minute != 15 {
@@ -132,9 +133,9 @@ func TestFormRejectsInvalid(t *testing.T) {
 
 func TestFormNeverOverwrites(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "digest.toml", "name = \"digest\"\n")
+	writeFile(t, dir, "nightly-report.toml", "name = \"nightly-report\"\n")
 	f := newFormModel(dir)
-	f.values["name"] = "digest"
+	f.values["name"] = "nightly-report"
 	f.values["prompt"] = "p"
 	if done, _ := f.trySave(); done {
 		t.Fatal("overwrote an existing action file")
@@ -151,11 +152,11 @@ func TestFormEditingAndCycle(t *testing.T) {
 	if !f.editing {
 		t.Fatal("enter did not start editing the name")
 	}
-	for _, r := range "digest" {
+	for _, r := range "nightly-report" {
 		f.press(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	f.press(tea.KeyMsg{Type: tea.KeyEnter})
-	if f.editing || f.values["name"] != "digest" {
+	if f.editing || f.values["name"] != "nightly-report" {
 		t.Fatalf("edit not committed: editing=%v name=%q", f.editing, f.values["name"])
 	}
 	// Field 1 is kind (enum): space cycles routine → heartbeat and rebuilds.
@@ -214,7 +215,7 @@ func TestMouseSelectsAndOpensDetails(t *testing.T) {
 		t.Fatalf("first click should only select: cursor=%d detail=%q", m.cursor, m.detail)
 	}
 	click(0, boardRowsTop+1)
-	if m.detail != "sync" {
+	if m.detail != "sync-files" {
 		t.Fatalf("second click should open details, got %q", m.detail)
 	}
 	click(0, boardRowsTop+10)
@@ -231,8 +232,8 @@ func TestMouseSelectsAndOpensDetails(t *testing.T) {
 
 func TestDetailButtons(t *testing.T) {
 	m := newBoardModel(boardFixture(t))
-	m.press("enter") // digest details
-	if m.detail != "digest" {
+	m.press("enter") // nightly-report details
+	if m.detail != "nightly-report" {
 		t.Fatal("fixture: details not open")
 	}
 	view := m.viewDetail()
@@ -247,7 +248,7 @@ func TestDetailButtons(t *testing.T) {
 	m.form = nil
 
 	// Space in the detail view pauses the action.
-	m.detail = "digest"
+	m.detail = "nightly-report"
 	m.press(" ")
 	if a := m.detailAction(); a == nil || a.IsEnabled() {
 		t.Error("space in detail view did not pause the action")
@@ -263,8 +264,8 @@ func TestDetailButtons(t *testing.T) {
 func TestBoardEOpensFormForActions(t *testing.T) {
 	m := newBoardModel(boardFixture(t))
 	m.press("e")
-	if m.form == nil || m.form.editPath == "" || m.form.values["name"] != "digest" {
-		t.Fatalf("e did not open the edit form for digest: %+v", m.form)
+	if m.form == nil || m.form.editPath == "" || m.form.values["name"] != "nightly-report" {
+		t.Fatalf("e did not open the edit form for nightly-report: %+v", m.form)
 	}
 	m.form = nil
 	// Broken rows cannot load into the form; e falls back to the raw editor.
@@ -277,9 +278,9 @@ func TestBoardEOpensFormForActions(t *testing.T) {
 func TestFormEditPrefillSaveAndRename(t *testing.T) {
 	p := boardFixture(t)
 	m := newBoardModel(p)
-	a := m.rows[0].action // digest, enabled
+	a := m.rows[0].action // nightly-report, enabled
 	f := newFormModelForAction(a, p.ActionsDir())
-	if f.values["name"] != "digest" || f.values["enabled"] != "true" || f.values["preset"] != "weekdays" || f.values["hours"] != "6" {
+	if f.values["name"] != "nightly-report" || f.values["enabled"] != "true" || f.values["preset"] != "weekdays" || f.values["hours"] != "6" {
 		t.Fatalf("prefill wrong: %+v", f.values)
 	}
 
@@ -294,7 +295,7 @@ func TestFormEditPrefillSaveAndRename(t *testing.T) {
 	}
 	var edited *Action
 	for _, got := range actions {
-		if got.Name == "digest" {
+		if got.Name == "nightly-report" {
 			edited = got
 		}
 	}
@@ -304,14 +305,14 @@ func TestFormEditPrefillSaveAndRename(t *testing.T) {
 
 	// Rename: writes the new file and removes the old one.
 	f2 := newFormModelForAction(edited, p.ActionsDir())
-	f2.values["name"] = "digest-am"
+	f2.values["name"] = "nightly-report-am"
 	if done, saved := f2.trySave(); !done || !saved {
 		t.Fatalf("rename save failed: %s", f2.err)
 	}
-	if _, err := os.Stat(filepath.Join(p.ActionsDir(), "digest.toml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(p.ActionsDir(), "nightly-report.toml")); !os.IsNotExist(err) {
 		t.Error("old file left behind after rename")
 	}
-	if _, err := os.Stat(filepath.Join(p.ActionsDir(), "digest-am.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(p.ActionsDir(), "nightly-report-am.toml")); err != nil {
 		t.Error("renamed file missing")
 	}
 
@@ -319,12 +320,12 @@ func TestFormEditPrefillSaveAndRename(t *testing.T) {
 	actions, _, _ = LoadActions(p.ActionsDir())
 	var am *Action
 	for _, got := range actions {
-		if got.Name == "digest-am" {
+		if got.Name == "nightly-report-am" {
 			am = got
 		}
 	}
 	f3 := newFormModelForAction(am, p.ActionsDir())
-	f3.values["name"] = "sync"
+	f3.values["name"] = "sync-files"
 	if done, _ := f3.trySave(); done {
 		t.Fatal("rename onto an existing action was allowed")
 	}
@@ -341,7 +342,147 @@ func TestEditorCommandPrefersConfigured(t *testing.T) {
 	if got != "nano" && got != "vi" {
 		t.Errorf("unexpected fallback editor: %q", got)
 	}
-	if _, err := os.Stat("/usr/bin/nano"); err == nil && got != "nano" {
+	// nano lives in different places per platform and package manager; ask the
+	// PATH the same way editorCommand does.
+	if _, err := exec.LookPath("nano"); err == nil && got != "nano" {
 		t.Errorf("nano available but not chosen: %q", got)
+	}
+}
+
+func TestFormWorkingHoursSurviveAnUnrelatedEdit(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "hourly-check.toml", `name = "hourly-check"
+kind = "heartbeat"
+directory = "~"
+prompt = "check the queue"
+enabled = true
+
+[heartbeat]
+interval_minutes = 60
+
+[heartbeat.working_hours]
+days = [1, 2, 3, 4, 5]
+start_hour = 9
+end_hour = 18
+`)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("fixture does not load: %v %v", err, fileErrs)
+	}
+	f := newFormModelForAction(actions[0], dir)
+	if f.values["wh_days"] != "1,2,3,4,5" || f.values["start_hour"] != "9" || f.values["end_hour"] != "18" {
+		t.Fatalf("working hours not prefilled: %+v", f.values)
+	}
+	if !contains(fieldKeys(f), "start_hour") {
+		t.Fatalf("heartbeat form has no working-hours fields: %v", fieldKeys(f))
+	}
+
+	f.values["name"] = "hourly-check-2"
+	if done, saved := f.trySave(); !done || !saved {
+		t.Fatalf("save failed: %s", f.err)
+	}
+	actions, fileErrs, _ = LoadActions(dir)
+	if len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("saved file does not load: %v", fileErrs)
+	}
+	wh := actions[0].Heartbeat.WorkingHours
+	if wh == nil || wh.StartHour != 9 || wh.EndHour != 18 || len(wh.Days) != 5 || wh.Days[0] != 1 {
+		t.Fatalf("working hours lost across a name-only edit: %+v", wh)
+	}
+	if actions[0].Heartbeat.IntervalMinutes != 60 {
+		t.Errorf("interval lost: %+v", actions[0].Heartbeat)
+	}
+}
+
+func TestFormBlankWorkingHoursWriteNoTable(t *testing.T) {
+	dir := t.TempDir()
+	f := newFormModel(dir)
+	f.values["kind"] = "heartbeat"
+	f.values["name"] = "hourly-check"
+	f.values["prompt"] = "check the queue"
+	f.rebuild()
+	if done, saved := f.trySave(); !done || !saved {
+		t.Fatalf("save failed: %s", f.err)
+	}
+	data := mustRead(t, filepath.Join(dir, "hourly-check.toml"))
+	if strings.Contains(string(data), "working_hours") {
+		t.Errorf("blank fields wrote a working-hours table:\n%s", data)
+	}
+	actions, fileErrs, _ := LoadActions(dir)
+	if len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("saved file does not load: %v", fileErrs)
+	}
+	if actions[0].Heartbeat.WorkingHours != nil {
+		t.Errorf("unexpected working hours: %+v", actions[0].Heartbeat.WorkingHours)
+	}
+}
+
+func TestFormRejectsUnusableWorkingHours(t *testing.T) {
+	dir := t.TempDir()
+	f := newFormModel(dir)
+	f.values["kind"] = "heartbeat"
+	f.values["name"] = "hourly-check"
+	f.values["prompt"] = "check the queue"
+	f.rebuild()
+
+	// Days alone cannot be written: the hours would default to an empty window.
+	f.values["wh_days"] = "1,2,3"
+	if done, _ := f.trySave(); done {
+		t.Fatal("saved a days-only working-hours block")
+	}
+	if !strings.Contains(f.err, "hours") {
+		t.Errorf("unhelpful error: %s", f.err)
+	}
+
+	f.values["wh_days"] = ""
+	f.values["start_hour"] = "9"
+	if done, _ := f.trySave(); done {
+		t.Fatal("saved a half-specified window")
+	}
+
+	// validate() rejects a window that starts and ends at the same hour.
+	f.values["end_hour"] = "9"
+	if done, _ := f.trySave(); done {
+		t.Fatal("saved a zero-length window")
+	}
+
+	f.values["end_hour"] = "18"
+	if done, saved := f.trySave(); !done || !saved {
+		t.Fatalf("valid window rejected: %s", f.err)
+	}
+}
+
+func TestFormErrorClearsOnTheNextEdit(t *testing.T) {
+	f := newFormModel(t.TempDir())
+	f.values["name"] = "bad name"
+	if done, _ := f.trySave(); done {
+		t.Fatal("saved an invalid name")
+	}
+	if f.err == "" {
+		t.Fatal("no error surfaced to the form")
+	}
+	f.cursor = 0
+	f.activate()
+	if f.err != "" {
+		t.Errorf("stale error survived into the edit: %s", f.err)
+	}
+}
+
+func TestCtrlCQuitsFromAHalfTypedField(t *testing.T) {
+	m := newBoardModel(boardFixture(t))
+	m.press("n")
+	if m.form == nil {
+		t.Fatal("n did not open the form")
+	}
+	m.form.activate()
+	if !m.form.editing {
+		t.Fatal("fixture: the form is not mid-edit")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c produced no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c did not quit: %T", cmd())
 	}
 }

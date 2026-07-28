@@ -55,7 +55,7 @@ func setActionEnabled(path string, v bool) error {
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode()
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".enabled-*.toml")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".enabled-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -72,4 +72,3 @@ func setActionEnabled(path string, v bool) error {
 	}
 	return os.Rename(tmp.Name(), path)
 }
-

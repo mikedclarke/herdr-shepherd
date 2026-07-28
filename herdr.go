@@ -55,9 +55,11 @@ func (c *herdrClient) callWithin(deadline time.Duration, method string, params m
 		return fmt.Errorf("connect herdr socket: %w", err)
 	}
 	defer conn.Close()
-	// A wedged server would otherwise pin the caller (and its action's
-	// running flag) forever.
-	conn.SetDeadline(time.Now().Add(deadline))
+	// A wedged server would otherwise pin the caller (and its action's run
+	// lock) forever.
+	if err := conn.SetDeadline(time.Now().Add(deadline)); err != nil {
+		return fmt.Errorf("set deadline: %w", err)
+	}
 
 	req := map[string]any{"id": "herdr-shepherd", "method": method, "params": params}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
@@ -143,10 +145,19 @@ func (c *herdrClient) agentWait(target string, until []string, timeoutMS int) (s
 }
 
 // paneExists distinguishes "the agent exited" from "the pane/workspace is
-// gone" after an agent_not_found.
-func (c *herdrClient) paneExists(paneID string) bool {
+// gone" after an agent_not_found. A transport error is neither, and is
+// reported so the caller can keep watching instead of declaring a live
+// session cancelled.
+func (c *herdrClient) paneExists(paneID string) (bool, error) {
 	err := c.call("pane.get", map[string]any{"pane_id": paneID}, nil)
-	return err == nil
+	switch {
+	case err == nil:
+		return true, nil
+	case isPaneNotFound(err):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func (c *herdrClient) notify(title, body, sound string) error {

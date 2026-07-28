@@ -1,7 +1,7 @@
 id = "mikedclarke.herdr-shepherd"
 name = "Shepherd"
 # Keep in sync with `version` in main.go.
-version = "0.5.1"
+version = "0.6.0"
 min_herdr_version = "0.7.0"
 description = "Scheduled agent sessions: heartbeats, cron routines, and scripts, launched as visible herdr workspaces."
 platforms = ["linux", "macos"]
@@ -20,6 +20,7 @@ command = ["./bin/herdr-shepherd", "daemon", "--detach"]
 id = "status"
 title = "Shepherd: Status"
 platforms = ["linux", "macos"]
+contexts = ["global"]
 command = ["./bin/herdr-shepherd", "status", "--notify"]
 
 # The status board. The action runs server-side (no terminal), so it asks herdr
@@ -28,6 +29,7 @@ command = ["./bin/herdr-shepherd", "status", "--notify"]
 id = "board"
 title = "Shepherd: Board"
 platforms = ["linux", "macos"]
+contexts = ["global"]
 command = ["./bin/herdr-shepherd", "board"]
 
 [[panes]]

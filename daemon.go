@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -22,6 +26,9 @@ const (
 	waitSliceMS = 60_000
 	// Phase-1 waits are sliced shorter so the start deadline stays responsive.
 	startWaitSliceMS = 15_000
+	// An idle seen mid-run is re-armed for this long before it is believed.
+	idleConfirmMS = 10_000
+	doneProbeMS   = 1_000
 	// A routine occurrence older than this is dropped, not run late — waking
 	// a slept machine at 08:55 must not fire the 06:00 jobs (see due).
 	catchUpGrace = 10 * time.Minute
@@ -30,7 +37,14 @@ const (
 	maxStartAttempts = 3
 	shellSettle      = 1 * time.Second
 	pollPause        = 1 * time.Second
-	outputTailMax    = 4096
+	// A pane whose shell was not ready swallows the submitted line; the
+	// command is sent once more after this long without a detected agent.
+	resendAfter       = 20 * time.Second
+	outputTailMax     = 4096
+	daemonLogMaxBytes = 5 << 20
+	// spawnDetached names the log file here so the daemon can rotate the file
+	// it is writing to.
+	logPathEnv = "HERDR_SHEPHERD_LOG"
 )
 
 // herdrAPI is the slice of the herdr socket API the daemon uses; it exists so
@@ -40,25 +54,29 @@ type herdrAPI interface {
 	workspaceClose(workspaceID string) error
 	runCommand(paneID, command string) error
 	agentWait(target string, until []string, timeoutMS int) (string, error)
-	paneExists(paneID string) bool
+	paneExists(paneID string) (bool, error)
 	notify(title, body, sound string) error
 }
 
 type daemon struct {
-	paths   paths
-	client  herdrAPI
-	state   *daemonState
-	started time.Time
+	paths  paths
+	client herdrAPI
+	state  *daemonState
 
 	// Timing knobs; runDaemon sets the real values, tests shrink them.
 	startTimeout time.Duration
 	settle       time.Duration
 	pause        time.Duration
+	resend       time.Duration
 
-	mu             sync.Mutex
-	running        map[string]bool
-	startFailures  map[string]int
+	// Log rotation state; only the tick loop touches it.
+	logFile *os.File
+	logPath string
+	// notifiedErrors holds the previous tick's config errors; tick-only.
 	notifiedErrors map[string]bool
+
+	mu            sync.Mutex
+	startFailures map[string]int
 }
 
 func runDaemon() error {
@@ -76,31 +94,93 @@ func runDaemon() error {
 	}
 	defer release()
 	seedExamples(p.ActionsDir())
+	if err := markInterrupted(p.RunLogFile()); err != nil {
+		log.Printf("interrupted-run scan: %v", err)
+	}
 
 	d := &daemon{
 		paths:          p,
 		client:         client,
 		state:          loadState(p.StateFile()),
-		started:        time.Now(),
 		startTimeout:   startTimeout,
 		settle:         shellSettle,
 		pause:          pollPause,
-		running:        map[string]bool{},
-		startFailures:  map[string]int{},
+		resend:         resendAfter,
 		notifiedErrors: map[string]bool{},
+		startFailures:  map[string]int{},
 	}
+	d.openLog(os.Getenv(logPathEnv))
+	defer d.closeLog()
 	log.Printf("shepherd %s: daemon started (config %s)", version, p.ConfigDir)
 	if err := client.notify("Shepherd daemon started", "", "none"); err != nil {
 		log.Printf("notify failed: %v", err)
 	}
 
+	// A signalled shutdown has to return through here, so the deferred
+	// release actually runs and the next daemon can take the lock.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	d.tick()
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		d.tick()
+	for {
+		select {
+		case <-ticker.C:
+			d.tick()
+		case <-ctx.Done():
+			log.Printf("shepherd: shutting down")
+			return nil
+		}
 	}
-	return nil
+}
+
+// openLog takes ownership of the log file spawnDetached created, so the tick
+// loop can rotate it. Without the env var the inherited fd redirect stands.
+func (d *daemon) openLog(path string) {
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Printf("open log %s: %v", path, err)
+		return
+	}
+	d.logFile, d.logPath = f, path
+	log.SetOutput(f)
+}
+
+func (d *daemon) closeLog() {
+	if d.logFile == nil {
+		return
+	}
+	log.SetOutput(os.Stderr)
+	d.logFile.Close()
+	d.logFile = nil
+}
+
+func (d *daemon) rotateLog() {
+	if d.logFile == nil {
+		return
+	}
+	info, err := d.logFile.Stat()
+	if err != nil || info.Size() <= daemonLogMaxBytes {
+		return
+	}
+	d.logFile.Close()
+	renameErr := os.Rename(d.logPath, d.logPath+".1")
+	f, err := os.OpenFile(d.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.SetOutput(os.Stderr)
+		d.logFile = nil
+		log.Printf("reopen log %s: %v", d.logPath, err)
+		return
+	}
+	d.logFile = f
+	log.SetOutput(f)
+	if renameErr != nil {
+		log.Printf("rotate log %s: %v", d.logPath, renameErr)
+	}
 }
 
 func (d *daemon) tick() {
@@ -109,6 +189,7 @@ func (d *daemon) tick() {
 			log.Printf("tick panic: %v\n%s", r, debug.Stack())
 		}
 	}()
+	d.rotateLog()
 	now := time.Now()
 	actions, fileErrs, err := LoadActions(d.paths.ActionsDir())
 	if err != nil {
@@ -117,24 +198,25 @@ func (d *daemon) tick() {
 		d.saveState()
 		return
 	}
-	for _, ferr := range fileErrs {
-		d.notifyConfigError(ferr)
-	}
+	d.notifyConfigErrors(fileErrs)
 
 	names := map[string]bool{}
 	for _, a := range actions {
 		names[a.Name] = true
-		if !a.IsEnabled() || d.isRunning(a.Name) {
+		if !a.IsEnabled() || runLockHeld(d.paths.StateDir, a.Name) {
 			continue
 		}
 		if fire, stamp := d.due(a, now); fire {
 			prev := d.state.lastRun(a.Name)
-			d.setRunning(a.Name, true)
 			d.state.setLastRun(a.Name, stamp)
 			go d.fire(a, prev)
 		}
 	}
-	d.state.prune(names)
+	if len(fileErrs) == 0 {
+		// A file that failed to parse is missing from names; pruning on that
+		// tick would drop its schedule and re-fire it early once fixed.
+		d.state.prune(names)
+	}
 	d.state.beat(now)
 	d.saveState()
 }
@@ -171,17 +253,20 @@ func (d *daemon) due(a *Action, now time.Time) (bool, time.Time) {
 		}
 		return !now.Before(a.Heartbeat.NextHeartbeat(last)), now
 	case KindRoutine, KindScript:
-		anchor := d.started
+		// Clamping the anchor to the grace window is what drops missed
+		// occurrences: a daemon that was asleep or stopped resumes at the
+		// next one instead of walking every occurrence it was away for.
+		anchor := now.Add(-catchUpGrace)
 		if last.After(anchor) {
 			anchor = last
 		}
-		next, err := a.Routine.NextRoutine(anchor)
+		next, err := nextOccurrence(a, anchor)
 		if err != nil {
 			return false, time.Time{}
 		}
 		if !last.IsZero() && sameWallClock(next, last) {
 			// DST fall-back repeats an hour; this occurrence already ran.
-			next, err = a.Routine.NextRoutine(next)
+			next, err = nextOccurrence(a, next)
 			if err != nil {
 				return false, time.Time{}
 			}
@@ -189,44 +274,25 @@ func (d *daemon) due(a *Action, now time.Time) (bool, time.Time) {
 		if now.Before(next) {
 			return false, time.Time{}
 		}
-		if now.Sub(next) > catchUpGrace {
-			log.Printf("%s: dropping missed occurrence %s", a.Name, next.Format(time.RFC3339))
-			d.state.setLastRun(a.Name, next)
-			return false, time.Time{}
-		}
 		return true, next
 	}
 	return false, time.Time{}
 }
 
-func (d *daemon) isRunning(name string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.running[name]
-}
-
-func (d *daemon) setRunning(name string, v bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if v {
-		d.running[name] = true
-	} else {
-		delete(d.running, name)
-	}
-}
-
-func (d *daemon) notifyConfigError(err error) {
-	key := err.Error()
-	d.mu.Lock()
-	seen := d.notifiedErrors[key]
-	d.notifiedErrors[key] = true
-	d.mu.Unlock()
-	log.Printf("config error: %v", err)
-	if !seen {
-		if nerr := d.client.notify("Shepherd: config error", key, "none"); nerr != nil {
-			log.Printf("notify failed: %v", nerr)
+// notifyConfigErrors notifies once per distinct error. The set is rebuilt from
+// this tick's errors, so it stays bounded and an error that returns after a
+// fix notifies again.
+func (d *daemon) notifyConfigErrors(fileErrs []error) {
+	seen := make(map[string]bool, len(fileErrs))
+	for _, ferr := range fileErrs {
+		key := ferr.Error()
+		seen[key] = true
+		log.Printf("config error: %v", ferr)
+		if !d.notifiedErrors[key] {
+			d.notify("Shepherd: config error", key, "none")
 		}
 	}
+	d.notifiedErrors = seen
 }
 
 func (d *daemon) notify(title, body, sound string) {
@@ -240,8 +306,17 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 		if r := recover(); r != nil {
 			log.Printf("%s: panic: %v\n%s", a.Name, r, debug.Stack())
 		}
-		d.setRunning(a.Name, false)
 	}()
+	release, ok, err := tryRunLock(d.paths.StateDir, a.Name)
+	if err != nil {
+		log.Printf("%s: run lock: %v", a.Name, err)
+		return
+	}
+	if !ok {
+		log.Printf("%s: skipped, a run is already in progress", a.Name)
+		return
+	}
+	defer release()
 
 	var status, detail string
 	var startFailed bool
@@ -276,38 +351,30 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 	}
 	d.state.setStatus(a.Name, status)
 	d.saveState()
-	appendRunLog(d.paths.RunLogFile(), runRecord{
+	d.appendRun(runRecord{
 		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: status, Detail: detail,
 	})
 	log.Printf("%s: %s (%s)", a.Name, status, detail)
 }
 
+func (d *daemon) appendRun(r runRecord) {
+	if err := appendRunLog(d.paths.RunLogFile(), r); err != nil {
+		log.Printf("%s: run log: %v", r.Action, err)
+	}
+}
+
 func (d *daemon) runScript(a *Action) (status, detail string) {
 	out := &tailBuffer{max: outputTailMax}
-	cmd := exec.Command("sh", "-c", a.Command)
-	cmd.Dir = a.Dir()
-	cmd.Stdout = out
-	cmd.Stderr = out
-	// Its own process group, so a timeout kill reaches grandchildren — and
-	// releases the output pipe cmd.Wait blocks on.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return "error", err.Error()
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			d.notify("Shepherd: "+a.Name+" failed", tailString(out.String(), 200), "none")
-			return "error", fmt.Sprintf("%v: %s", err, out.String())
-		}
+	err := runScriptOnce(a, out)
+	switch {
+	case err == nil:
 		return "completed", out.String()
-	case <-time.After(time.Duration(a.TimeoutMinutes) * time.Minute):
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
+	case errors.Is(err, errScriptTimeout):
 		d.notify("Shepherd: "+a.Name+" timed out", "", "none")
-		return "error", fmt.Sprintf("timed out after %dm", a.TimeoutMinutes)
+		return "error", err.Error()
+	default:
+		d.notify("Shepherd: "+a.Name+" failed", tailString(out.String(), 200), "none")
+		return "error", fmt.Sprintf("%v: %s", err, out.String())
 	}
 }
 
@@ -320,48 +387,60 @@ func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
 	if err != nil {
 		return "error", err.Error(), false
 	}
-	wsID, paneID, err := d.client.workspaceCreate(a.Dir(), "Shepherd · "+a.Name, map[string]string{
-		"SHEPHERD_ACTION": a.Name,
+	wsID, paneID, err := launchAgentWorkspace(d.client, a, d.settle)
+	switch {
+	case err == nil:
+	case errors.Is(err, errLaunchCreate):
+		return "error", err.Error(), true
+	case errors.Is(err, errLaunchSubmit):
+		// The workspace is already closed again. Nothing ran, but a pane that
+		// rejects input needs a person, not another attempt.
+		return "attention", err.Error(), false
+	default:
+		return "error", err.Error(), false
+	}
+	d.appendRun(runRecord{
+		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: "started", Detail: "workspace " + wsID,
 	})
-	if err != nil {
-		return "error", "workspace create: " + err.Error(), true
-	}
-	time.Sleep(d.settle)
-	if err := d.client.runCommand(paneID, command); err != nil {
-		d.client.workspaceClose(wsID)
-		return "error", "run command: " + err.Error(), true
-	}
 
-	// Phase 1: wait for herdr to detect the agent and see it actually start.
-	// agent.wait errors with agent_not_found (instantly, not a timeout) until
-	// detection — and a freshly launched agent then reports idle for several
-	// seconds before its first turn registers as working. Accepting idle or
-	// done here ends the watch seconds into a real run (a stalled routine was
-	// once logged "completed" 17s after firing, silencing every later alert),
-	// so only working/blocked count as started. The short done-only probe on
-	// timeout keeps a run that finishes between waits from being misreported
-	// as never starting; a pane that stays idle past the deadline is surfaced
-	// as attention, not success.
+	// Phase 1: agent.wait errors with agent_not_found until herdr detects the
+	// agent, and a fresh one reports idle before its first turn registers —
+	// so only working/blocked count as started.
 	startDeadline := time.Now().Add(d.startTimeout)
+	resendAt := time.Now().Add(d.resend)
+	resent := false
 	state := ""
 	for state == "" {
-		s, err := d.client.agentWait(paneID, []string{"working", "blocked"}, startWaitSliceMS)
+		s, werr := d.client.agentWait(paneID, []string{"working", "blocked"}, startWaitSliceMS)
 		switch {
-		case err == nil:
+		case werr == nil:
 			state = s
-		case isTimeout(err):
-			if probe, perr := d.client.agentWait(paneID, []string{"done"}, 1_000); perr == nil {
+		case isTimeout(werr):
+			// A run that finished between waits never showed working.
+			if probe, perr := d.client.agentWait(paneID, []string{"done"}, doneProbeMS); perr == nil {
 				state = probe
 			}
-		case isAgentNotFound(err):
+		case isPaneNotFound(werr):
+			return "cancelled", "pane closed before the agent started; workspace " + wsID, false
+		case isAgentNotFound(werr):
 			time.Sleep(d.pause)
 		default:
-			d.client.workspaceClose(wsID)
-			return "error", "agent wait: " + err.Error(), true
+			// Transport errors are transient; keep waiting rather than tear
+			// down a workspace that may be running the agent perfectly well.
+			time.Sleep(d.pause)
 		}
-		if state == "" && time.Now().After(startDeadline) {
+		if state != "" {
+			break
+		}
+		if !resent && time.Now().After(resendAt) {
+			resent = true
+			if rerr := d.client.runCommand(paneID, command); rerr != nil {
+				log.Printf("%s: resend command: %v", a.Name, rerr)
+			}
+		}
+		if time.Now().After(startDeadline) {
 			d.notify("Shepherd: "+a.Name+" did not start", "No agent activity in its pane", "none")
-			return "attention", "agent never started working within start timeout", false
+			return "attention", "agent never started working within start timeout; workspace " + wsID, false
 		}
 	}
 
@@ -372,15 +451,32 @@ func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
 	until := []string{"done", "idle", "blocked"}
 	notified := false
 	exited := false
-	for state != "done" && state != "idle" {
-		if state == "blocked" && !notified {
-			notified = true
-			until = []string{"done", "idle"}
-			d.notify("Shepherd: "+a.Name+" needs attention", "The session is waiting on input", "request")
+	idled := false
+	for state != "done" && !idled {
+		switch state {
+		case "blocked":
+			if !notified {
+				notified = true
+				until = []string{"done", "idle"}
+				d.notify("Shepherd: "+a.Name+" needs attention", "The session is waiting on input", "request")
+			}
+		case "idle":
+			s, cerr := d.confirmIdle(paneID)
+			if cerr != nil {
+				// Hand it to the shared wait path below, which can tell a
+				// closed pane from a transport error.
+				state = ""
+				continue
+			}
+			if s == "idle" {
+				idled = true
+			}
+			state = s
+			continue
 		}
 		if time.Now().After(deadline) {
 			d.notify("Shepherd: "+a.Name+" still running", fmt.Sprintf("Exceeded watch window of %dm", a.WatchMinutes), "none")
-			return "attention", "watch window exceeded; session left open", false
+			return "attention", "watch window exceeded; session left open; workspace " + wsID, false
 		}
 		time.Sleep(d.pause)
 		state, err = d.client.agentWait(paneID, until, waitSliceMS)
@@ -390,14 +486,20 @@ func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
 				continue
 			}
 			if isAgentNotFound(err) {
-				if !d.client.paneExists(paneID) {
-					return "cancelled", "pane closed during run", false
+				alive, perr := d.client.paneExists(paneID)
+				if perr != nil {
+					// Only a confirmed missing pane ends the run.
+					state = ""
+					continue
+				}
+				if !alive {
+					return "cancelled", "pane closed during run; workspace " + wsID, false
 				}
 				// The agent process exited (crash or clean exit to shell).
 				exited = true
 				break
 			}
-			return "error", "agent wait: " + err.Error(), false
+			return "error", "agent wait: " + err.Error() + "; workspace " + wsID, false
 		}
 	}
 
@@ -407,18 +509,33 @@ func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
 	case notified:
 		status, detail = "attention", "completed after needing attention"
 	default:
-		status, detail = "completed", "workspace "+wsID
+		status, detail = "completed", "session finished"
 	}
 	if a.AutoClose {
-		if err := d.client.workspaceClose(wsID); err != nil {
-			return status, detail + "; close failed: " + err.Error(), false
-		}
-		detail = "closed workspace"
-		if notified {
-			detail = "completed after needing attention; closed workspace"
+		if cerr := d.client.workspaceClose(wsID); cerr != nil {
+			detail += "; close failed: " + cerr.Error()
+		} else {
+			detail += "; closed"
 		}
 	}
-	return status, detail, false
+	return status, detail + "; workspace " + wsID, false
+}
+
+// confirmIdle re-arms after a phase-2 idle. An agent between turns reports
+// idle, so only an idle that survives the re-arm ends the watch; the done
+// probe catches a session that finished inside the re-arm window.
+func (d *daemon) confirmIdle(paneID string) (string, error) {
+	s, err := d.client.agentWait(paneID, []string{"working", "blocked"}, idleConfirmMS)
+	if err == nil {
+		return s, nil
+	}
+	if !isTimeout(err) {
+		return "", err
+	}
+	if probe, perr := d.client.agentWait(paneID, []string{"done"}, doneProbeMS); perr == nil {
+		return probe, nil
+	}
+	return "idle", nil
 }
 
 // tailBuffer keeps only the last max bytes written, so a chatty script cannot
@@ -438,11 +555,19 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 
 func (b *tailBuffer) String() string { return strings.TrimSpace(string(b.data)) }
 
+const tailMarker = "…"
+
+// tailString keeps the last n bytes of s behind an ellipsis, advanced to the
+// next rune boundary so the result is never a broken UTF-8 sequence.
 func tailString(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "…" + s[len(s)-n:]
+	cut := s[len(s)-n:]
+	for len(cut) > 0 && !utf8.RuneStart(cut[0]) {
+		cut = cut[1:]
+	}
+	return tailMarker + cut
 }
 
 // acquireLock takes a kernel flock on the lock file, held for the process
@@ -459,12 +584,22 @@ func acquireLock(path string) (func(), error) {
 		f.Close()
 		return nil, fmt.Errorf("daemon already running (pid %s)", strings.TrimSpace(string(data)))
 	}
-	f.Truncate(0)
-	f.Seek(0, 0)
-	f.WriteString(strconv.Itoa(os.Getpid()))
+	if err := f.Truncate(0); err != nil {
+		log.Printf("lock file truncate: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		log.Printf("lock file seek: %v", err)
+	}
+	if _, err := f.WriteString(strconv.Itoa(os.Getpid())); err != nil {
+		log.Printf("lock file write: %v", err)
+	}
 	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+			log.Printf("lock file unlock: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			log.Printf("lock file close: %v", err)
+		}
 	}, nil
 }
 
@@ -486,7 +621,10 @@ func seedExamples(actionsDir string) {
 		return
 	}
 	if err := os.MkdirAll(actionsDir, 0o755); err != nil {
+		log.Printf("seed examples: %v", err)
 		return
 	}
-	os.WriteFile(actionsDir+"/example-heartbeat.toml", []byte(exampleAction), 0o644)
+	if err := os.WriteFile(filepath.Join(actionsDir, "example-heartbeat.toml"), []byte(exampleAction), 0o644); err != nil {
+		log.Printf("seed examples: %v", err)
+	}
 }

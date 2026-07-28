@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-const version = "0.5.1"
+const version = "0.6.0"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>
@@ -81,9 +81,8 @@ func spawnDetached() error {
 	if err := os.MkdirAll(p.StateDir, 0o755); err != nil {
 		return err
 	}
-	if info, statErr := os.Stat(p.LogFile()); statErr == nil && info.Size() > runLogMaxBytes {
-		os.Rename(p.LogFile(), p.LogFile()+".1")
-	}
+	// The redirect only has to catch output from a crash; the daemon opens
+	// the same file itself and rotates it as it runs.
 	logf, err := os.OpenFile(p.LogFile(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -94,6 +93,7 @@ func spawnDetached() error {
 		return err
 	}
 	cmd := exec.Command(exe, "daemon")
+	cmd.Env = append(os.Environ(), logPathEnv+"="+p.LogFile())
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

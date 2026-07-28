@@ -18,7 +18,7 @@ func writeFile(t *testing.T, dir, name, content string) string {
 
 func TestSetActionEnabledTogglesInPlace(t *testing.T) {
 	content := `# keep this comment
-name = "digest"
+name = "nightly-report"
 kind = "routine"
 enabled = true
 directory = "~"
@@ -48,7 +48,7 @@ minute = 15
 }
 
 func TestSetActionEnabledInsertsAfterName(t *testing.T) {
-	content := `name = "sync"
+	content := `name = "sync-files"
 kind = "script"
 directory = "~"
 command = "true"
@@ -122,7 +122,7 @@ func TestSetActionEnabledPreservesMode(t *testing.T) {
 
 func TestLoadActionsRecordsSourceFile(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFile(t, dir, "digest.toml", "name = \"digest\"\nkind = \"script\"\ndirectory = \"~\"\ncommand = \"true\"\n")
+	path := writeFile(t, dir, "nightly-report.toml", "name = \"nightly-report\"\nkind = \"script\"\ndirectory = \"~\"\ncommand = \"true\"\n")
 	actions, _, err := LoadActions(dir)
 	if err != nil || len(actions) != 1 {
 		t.Fatalf("load: %v", err)

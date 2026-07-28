@@ -48,46 +48,99 @@ func (r boardRow) sourceFile(actionsDir string) string {
 type tickMsg time.Time
 
 type scriptDoneMsg struct {
-	name string
-	err  error
-	tail string
+	name   string
+	err    error
+	tail   string
+	logErr error // the run-log append failed; the TUI owns the screen, so it reports here
 }
 
 type editorDoneMsg struct{ err error }
 
 type agentStartedMsg struct {
-	name string
-	ws   string
-	err  error
+	name   string
+	ws     string
+	err    error
+	logErr error // the started record failed to append; reported here, not stderr
 }
 
 type boardModel struct {
-	paths    paths
-	rows     []boardRow
-	st       *daemonState
-	now      time.Time
-	cursor   int
-	width    int
-	height   int
-	detail   string // action name shown in the detail view; "" = board
-	history  []runRecord
-	status   string
-	statusAt time.Time
-	running  map[string]bool // manual script runs in flight
-	form     *formModel      // non-nil while the new-action form is open
+	paths       paths
+	rows        []boardRow
+	st          *daemonState
+	now         time.Time
+	cursor      int
+	top         int // first visible row when the list is taller than the terminal
+	width       int
+	height      int
+	detail      string // action name shown in the detail view; "" = board
+	history     []runRecord
+	histName    string // action the cached history belongs to
+	histSize    int64  // run-log size and mtime the cache was built from
+	histMod     time.Time
+	fingerprint string // actions-dir stat summary; unchanged means no re-parse
+	status      string
+	statusAt    time.Time
+	running     map[string]bool   // manual runs this board started
+	locked      map[string]bool   // run locks held by anyone, refreshed each reload
+	locks       map[string]func() // release funcs for the runs above
+	form        *formModel        // non-nil while the new-action form is open
 }
 
 // Board layout rows (see viewBoard): title 0, actions dir 1, blank 2, column
-// header 3, action rows from 4. The footer's y depends on row count and the
-// status line; footerY computes it to match viewBoard exactly.
-const boardRowsTop = 4
+// header 3, action rows from 4; then a blank row, an optional status line, and
+// the footer. footerY computes the footer's y to match viewBoard exactly.
+const (
+	boardRowsTop     = 4
+	boardFooterLines = 2
+)
 
 func (m *boardModel) footerY() int {
-	y := boardRowsTop + len(m.rows) + 1
+	y := boardRowsTop + m.visibleRows() + 1
 	if m.status != "" {
 		y++
 	}
 	return y
+}
+
+// visibleRows is how many rows fit under the column header. A zero height —
+// before the first WindowSizeMsg — means no limit.
+func (m *boardModel) visibleRows() int {
+	if m.height <= 0 {
+		return len(m.rows)
+	}
+	avail := m.height - boardRowsTop - boardFooterLines
+	if m.status != "" {
+		avail--
+	}
+	if avail < 1 {
+		avail = 1
+	}
+	if avail > len(m.rows) {
+		return len(m.rows)
+	}
+	return avail
+}
+
+// scrollTop slides the window so the cursor stays in view; every click-target
+// calculation goes through it, so the view and the mouse agree on which row is
+// on which line.
+func (m *boardModel) scrollTop() int {
+	n := m.visibleRows()
+	top := m.top
+	if m.cursor < top {
+		top = m.cursor
+	}
+	if m.cursor >= top+n {
+		top = m.cursor - n + 1
+	}
+	if last := len(m.rows) - n; top > last {
+		top = last
+	}
+	if top < 0 {
+		top = 0
+	}
+	m.top = top
+	return top
 }
 
 // footerSegments are the footer hints; each is also a click target that
@@ -125,7 +178,10 @@ func footerKeyAt(x int) string {
 }
 
 func newBoardModel(p paths) *boardModel {
-	m := &boardModel{paths: p, st: loadState(p.StateFile()), now: time.Now(), running: map[string]bool{}}
+	m := &boardModel{
+		paths: p, st: readState(p.StateFile()), now: time.Now(),
+		running: map[string]bool{}, locked: map[string]bool{}, locks: map[string]func(){},
+	}
 	m.reload()
 	return m
 }
@@ -137,6 +193,24 @@ func tickCmd() tea.Cmd {
 }
 
 func (m *boardModel) reload() {
+	if fp := actionsFingerprint(m.paths.ActionsDir()); fp == "" || fp != m.fingerprint {
+		m.fingerprint = fp
+		m.reloadActions()
+	}
+	m.st = readState(m.paths.StateFile())
+	m.now = time.Now()
+	m.locked = map[string]bool{}
+	for _, r := range m.rows {
+		if r.action != nil && runLockHeld(m.paths.StateDir, r.action.Name) {
+			m.locked[r.action.Name] = true
+		}
+	}
+	if m.detail != "" {
+		m.history = m.historyFor(m.detail)
+	}
+}
+
+func (m *boardModel) reloadActions() {
 	selected := ""
 	selectedNew := false
 	if m.cursor < len(m.rows) {
@@ -162,8 +236,6 @@ func (m *boardModel) reload() {
 	}
 	rows = append(rows, boardRow{isNew: true})
 	m.rows = rows
-	m.st = loadState(m.paths.StateFile())
-	m.now = time.Now()
 	m.cursor = 0
 	if selectedNew {
 		m.cursor = len(rows) - 1
@@ -175,9 +247,44 @@ func (m *boardModel) reload() {
 			}
 		}
 	}
-	if m.detail != "" {
-		m.history = actionHistory(m.paths.RunLogFile(), m.detail, historyDepth)
+}
+
+// actionsFingerprint summarises the action files by name, size and mtime. An
+// unchanged fingerprint means reload can keep the parsed rows; an unreadable
+// directory returns "" so the parse is never skipped on a guess.
+func actionsFingerprint(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
 	}
+	var b strings.Builder
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return ""
+		}
+		fmt.Fprintf(&b, "%s %d %d\n", e.Name(), info.Size(), info.ModTime().UnixNano())
+	}
+	return b.String()
+}
+
+// historyFor caches the detail view's history against the run log's size and
+// mtime: the 2s tick would otherwise re-read and re-parse an unchanged file.
+func (m *boardModel) historyFor(name string) []runRecord {
+	path := m.paths.RunLogFile()
+	var size int64
+	var mod time.Time
+	if info, err := os.Stat(path); err == nil {
+		size, mod = info.Size(), info.ModTime()
+	}
+	if m.histName == name && m.histSize == size && m.histMod.Equal(mod) {
+		return m.history
+	}
+	m.histName, m.histSize, m.histMod = name, size, mod
+	return actionHistory(path, name, historyDepth)
 }
 
 func (m *boardModel) selectedRow() *boardRow {
@@ -207,9 +314,13 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 	case scriptDoneMsg:
 		delete(m.running, msg.name)
-		if msg.err != nil {
+		m.releaseRun(msg.name)
+		switch {
+		case msg.err != nil:
 			m.note(styleError.Render(fmt.Sprintf("%s failed: %v — %s", msg.name, msg.err, firstLine(msg.tail))))
-		} else {
+		case msg.logErr != nil:
+			m.note(styleError.Render(fmt.Sprintf("%s completed; run log: %v", msg.name, msg.logErr)))
+		default:
 			m.note(fmt.Sprintf("%s completed", msg.name))
 		}
 		return m, nil
@@ -220,15 +331,26 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reload()
 		return m, nil
 	case agentStartedMsg:
-		if msg.err != nil {
+		// The run itself is unwatched by design, so the lock only covers the
+		// launch: it stops a double press opening two workspaces.
+		delete(m.running, msg.name)
+		m.releaseRun(msg.name)
+		switch {
+		case msg.err != nil:
 			m.note(styleError.Render(fmt.Sprintf("%s: %v", msg.name, msg.err)))
-		} else {
+		case msg.logErr != nil:
+			m.note(styleError.Render(fmt.Sprintf("%s started in workspace %s; run log: %v", msg.name, msg.ws, msg.logErr)))
+		default:
 			m.note(fmt.Sprintf("%s started in workspace %s", msg.name, msg.ws))
 		}
 		return m, nil
 	}
 
 	if m.form != nil {
+		// ctrl+c quits from anywhere, including a half-typed field.
+		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
 		if done, saved := m.form.update(msg); done {
 			m.form = nil
 			m.reload()
@@ -298,7 +420,7 @@ func (m *boardModel) press(key string) (tea.Model, tea.Cmd) {
 			m.form = newFormModel(m.paths.ActionsDir())
 		case r.action != nil:
 			m.detail = r.action.Name
-			m.history = actionHistory(m.paths.RunLogFile(), m.detail, historyDepth)
+			m.history = m.historyFor(m.detail)
 		}
 	case "e":
 		return m, m.editSelected()
@@ -360,8 +482,9 @@ func (m *boardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case tea.MouseButtonWheelDown:
 		return m.press("down")
 	case tea.MouseButtonLeft:
-		row := msg.Y - boardRowsTop
-		if row >= 0 && row < len(m.rows) {
+		line := msg.Y - boardRowsTop
+		row := line + m.scrollTop()
+		if line >= 0 && line < m.visibleRows() && row < len(m.rows) {
 			already := m.cursor == row
 			m.cursor = row
 			if m.rows[row].isNew || already {
@@ -450,6 +573,9 @@ func (m *boardModel) rowHint(r *boardRow) {
 	}
 }
 
+// runSelected fires the selected action by hand. Manual runs keep their CLI
+// semantics: scripts run to completion here, agent sessions are handed to the
+// user once started, and neither consults or updates the daemon's schedule.
 func (m *boardModel) runSelected() tea.Cmd {
 	r := m.selectedRow()
 	if r == nil || r.action == nil {
@@ -461,23 +587,54 @@ func (m *boardModel) runSelected() tea.Cmd {
 		m.note(fmt.Sprintf("%s is already running", a.Name))
 		return nil
 	}
+	release, ok, err := tryRunLock(m.paths.StateDir, a.Name)
+	if err != nil {
+		m.note(styleError.Render(err.Error()))
+		return nil
+	}
+	if !ok {
+		m.locked[a.Name] = true
+		m.note(fmt.Sprintf("%s is already running (another process)", a.Name))
+		return nil
+	}
+	m.running[a.Name] = true
+	m.locks[a.Name] = release
+	logFile := m.paths.RunLogFile()
 	if a.Kind == KindScript {
-		m.running[a.Name] = true
 		m.note(fmt.Sprintf("running %s…", a.Name))
 		return func() tea.Msg {
 			out := &tailBuffer{max: outputTailMax}
-			cmd := exec.Command("sh", "-c", a.Command)
-			cmd.Dir = a.Dir()
-			cmd.Stdout = out
-			cmd.Stderr = out
-			err := cmd.Run()
-			return scriptDoneMsg{name: a.Name, err: err, tail: out.String()}
+			runErr := runScriptOnce(a, out)
+			rec := runRecord{
+				At: time.Now(), Action: a.Name, Kind: a.Kind,
+				Status: "completed", Detail: out.String(), Trigger: triggerManual,
+			}
+			if runErr != nil {
+				rec.Status, rec.Detail = "error", runErr.Error()
+			}
+			return scriptDoneMsg{
+				name: a.Name, err: runErr, tail: out.String(),
+				logErr: appendRunLog(logFile, rec),
+			}
 		}
 	}
 	m.note(fmt.Sprintf("starting %s…", a.Name))
 	return func() tea.Msg {
 		ws, err := startAgentRun(a)
-		return agentStartedMsg{name: a.Name, ws: ws, err: err}
+		msg := agentStartedMsg{name: a.Name, ws: ws, err: err}
+		if err == nil {
+			msg.logErr = recordManualStart(a, ws)
+		}
+		return msg
+	}
+}
+
+// releaseRun drops the run lock a manual run held; runs the board did not
+// start have none.
+func (m *boardModel) releaseRun(name string) {
+	if release := m.locks[name]; release != nil {
+		release()
+		delete(m.locks, name)
 	}
 }
 
@@ -553,11 +710,12 @@ func (m *boardModel) viewBoard() string {
 		styleDim.Render(fmt.Sprintf("  ·  %d/%d enabled", enabled, total)) + "\n")
 	b.WriteString(styleDim.Render(m.paths.ActionsDir()) + "\n\n")
 
-	b.WriteString(styleDim.Render(fmt.Sprintf("  %-22s %-9s %-22s %-20s %s", "NAME", "KIND", "SCHEDULE", "LAST RUN", "NEXT RUN")) + "\n")
+	b.WriteString(styleDim.Render(m.clamp(fmt.Sprintf("  %-22s %-9s %-22s %-20s %s", "NAME", "KIND", "SCHEDULE", "LAST RUN", "NEXT RUN"))) + "\n")
 
-	for i, r := range m.rows {
+	top := m.scrollTop()
+	for i, r := range m.rows[top : top+m.visibleRows()] {
 		line := m.renderRow(r)
-		if i == m.cursor {
+		if top+i == m.cursor {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(line + "\n")
@@ -576,7 +734,8 @@ func (m *boardModel) renderRow(r boardRow) string {
 		return styleDim.Render("+ new action…")
 	}
 	if r.action == nil {
-		return styleError.Render(fmt.Sprintf("✗ %-22s %s", truncate(r.errFile, 22), truncate(r.errText, 60)))
+		return styleError.Render(m.clamp(fmt.Sprintf("✗ %s %s",
+			pad(truncate(r.errFile, 22), 22), truncate(r.errText, 60))))
 	}
 	a := r.action
 	dot := styleEnabled.Render("●")
@@ -587,19 +746,31 @@ func (m *boardModel) renderRow(r boardRow) string {
 	if s := m.st.lastStatus(a.Name); s != "" && last != "-" {
 		last += " " + statusGlyph(s)
 	}
-	if m.running[a.Name] {
+	// The lock is the only cross-process signal, so a scheduled run the daemon
+	// started shows here too.
+	if m.running[a.Name] || m.locked[a.Name] {
 		last = "running…"
 	}
 	next := fmtTime(nextRun(a, m.st.lastRun(a.Name), m.now), "")
 	if !a.IsEnabled() {
 		next = "paused"
 	}
-	line := fmt.Sprintf("%s %-22s %-9s %-22s %-20s %s",
-		dot, truncate(a.Name, 22), a.Kind, truncate(scheduleSummary(a), 22), truncate(last, 20), next)
+	line := m.clamp(fmt.Sprintf("%s %s %s %s %s %s",
+		dot, pad(truncate(a.Name, 22), 22), pad(string(a.Kind), 9),
+		pad(truncate(scheduleSummary(a), 22), 22), pad(truncate(last, 20), 20), next))
 	if !a.IsEnabled() {
 		return styleDisabled.Render(line)
 	}
 	return line
+}
+
+// clamp cuts a row to the terminal width; a row that wraps pushes every line
+// below it down and breaks the click-target arithmetic.
+func (m *boardModel) clamp(line string) string {
+	if m.width <= 0 {
+		return line
+	}
+	return lipgloss.NewStyle().MaxWidth(m.width).Render(line)
 }
 
 func statusGlyph(status string) string {
@@ -608,7 +779,9 @@ func statusGlyph(status string) string {
 		return styleEnabled.Render("✓")
 	case "error":
 		return styleError.Render("✗")
-	case "attention", "cancelled":
+	case "started":
+		return styleDim.Render("▸")
+	case "attention", "cancelled", "interrupted":
 		return styleAttn.Render("!")
 	}
 	return status
@@ -667,14 +840,35 @@ func (m *boardModel) viewDetail() string {
 	return b.String()
 }
 
+// truncate and pad work in terminal cells, not bytes: %-Ns and s[:n] on a name
+// with multi-byte or wide runes mis-column every field after it, and can cut a
+// rune in half.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if lipgloss.Width(s) <= n {
 		return s
 	}
+	r := []rune(s)
 	if n <= 1 {
-		return s[:n]
+		return string(r[:n])
 	}
-	return s[:n-1] + "…"
+	var b strings.Builder
+	w := 0
+	for _, c := range r {
+		cw := lipgloss.Width(string(c))
+		if w+cw > n-1 {
+			break
+		}
+		b.WriteRune(c)
+		w += cw
+	}
+	return b.String() + "…"
+}
+
+func pad(s string, n int) string {
+	if w := lipgloss.Width(s); w < n {
+		return s + strings.Repeat(" ", n-w)
+	}
+	return s
 }
 
 func firstLine(s string) string {

@@ -75,8 +75,26 @@ func TestClientErrorCodes(t *testing.T) {
 	if !isAgentNotFound(err) {
 		t.Errorf("expected agent_not_found, got %v", err)
 	}
-	if c.paneExists("p") {
-		t.Error("pane_not_found should report not existing")
+	if alive, err := c.paneExists("p"); alive || err != nil {
+		t.Errorf("pane_not_found should report a missing pane, got %v %v", alive, err)
+	}
+}
+
+func TestClientPaneExistsSeparatesMissingFromUnreachable(t *testing.T) {
+	// Only a confirmed missing pane may end a run; anything else is a
+	// transport problem the caller should keep watching through.
+	c := fakeHerdr(t, map[string]string{
+		"pane.get": `{"id":"x","result":{}}`,
+	})
+	if alive, err := c.paneExists("p"); !alive || err != nil {
+		t.Errorf("got %v %v", alive, err)
+	}
+
+	broken := fakeHerdr(t, map[string]string{
+		"pane.get": `{"id":"x","error":{"code":"internal","message":"boom"}}`,
+	})
+	if alive, err := broken.paneExists("p"); alive || err == nil {
+		t.Errorf("an unreachable pane check must report its error, got %v %v", alive, err)
 	}
 }
 

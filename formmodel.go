@@ -58,8 +58,8 @@ func newFormModel(actionsDir string) *formModel {
 			"cli":    "claude", "model": "", "permission_mode": "default",
 			"auto_close": "false", "watch_minutes": "240",
 			"command": "", "timeout_minutes": "30",
-			"interval_minutes": "30",
-			"preset":           "weekdays", "hours": "9", "minute": "0",
+			"interval_minutes": "30", "wh_days": "", "start_hour": "", "end_hour": "",
+			"preset": "weekdays", "hours": "9", "minute": "0",
 			"days": "1,2,3,4,5", "month_day": "1", "cron": "0 9 * * *",
 		},
 	}
@@ -88,6 +88,11 @@ func newFormModelForAction(a *Action, actionsDir string) *formModel {
 	v["command"] = a.Command
 	v["timeout_minutes"] = strconv.Itoa(a.TimeoutMinutes)
 	v["interval_minutes"] = strconv.Itoa(a.Heartbeat.IntervalMinutes)
+	if wh := a.Heartbeat.WorkingHours; wh != nil {
+		v["wh_days"] = csvInts(wh.Days)
+		v["start_hour"] = strconv.Itoa(wh.StartHour)
+		v["end_hour"] = strconv.Itoa(wh.EndHour)
+	}
 	r := a.Routine
 	if r.Preset != "" {
 		v["preset"] = r.Preset
@@ -145,6 +150,9 @@ func (f *formModel) rebuild() {
 	case "heartbeat":
 		fields = append(fields,
 			formField{key: "interval_minutes", label: "every (min)", ftype: ftInt},
+			formField{key: "wh_days", label: "only on days", ftype: ftText, help: "0=Sun .. 6=Sat, comma-separated; blank = every day"},
+			formField{key: "start_hour", label: "from hour", ftype: ftText, help: "0-23; blank with 'to hour' = any time of day"},
+			formField{key: "end_hour", label: "to hour", ftype: ftText, help: "1-24; must differ from 'from hour'"},
 		)
 	default:
 		fields = append(fields,
@@ -284,6 +292,7 @@ func (f *formModel) activate() {
 	case ftEnum, ftBool:
 		f.cycle(1)
 	default:
+		f.err = ""
 		f.editing = true
 		f.editBuf = f.values[fd.key]
 	}
@@ -310,12 +319,16 @@ func (f *formModel) cycle(delta int) {
 	}
 	next := (current + delta + len(options)) % len(options)
 	f.values[fd.key] = options[next]
+	// A save error names a field; once that field is edited the message is
+	// about a value the form no longer holds.
+	f.err = ""
 	f.rebuild()
 }
 
 func (f *formModel) commitEdit() {
 	fd := f.fields[f.cursor]
 	f.values[fd.key] = strings.TrimSpace(f.editBuf)
+	f.err = ""
 	f.editing = false
 	f.editBuf = ""
 }
@@ -385,6 +398,9 @@ func (f *formModel) buildAction() (*Action, error) {
 		if a.Heartbeat.IntervalMinutes, err = intVal("interval_minutes", "every"); err != nil {
 			return nil, err
 		}
+		if a.Heartbeat.WorkingHours, err = f.workingHours(); err != nil {
+			return nil, err
+		}
 	} else {
 		r := RoutineSpec{Preset: v["preset"]}
 		switch r.Preset {
@@ -415,6 +431,39 @@ func (f *formModel) buildAction() (*Action, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+// workingHours builds the optional [heartbeat.working_hours] table. Both hours
+// blank means no table at all: two zeroes would be written as a window that
+// starts and ends at midnight, which validate() rejects — and days alone
+// cannot be expressed without them.
+func (f *formModel) workingHours() (*WorkingHours, error) {
+	days := strings.TrimSpace(f.values["wh_days"])
+	start := strings.TrimSpace(f.values["start_hour"])
+	end := strings.TrimSpace(f.values["end_hour"])
+	if start == "" && end == "" {
+		if days != "" {
+			return nil, fmt.Errorf("only on days: set from/to hours as well (0 and 24 for all day)")
+		}
+		return nil, nil
+	}
+	if start == "" || end == "" {
+		return nil, fmt.Errorf("working hours: set both from hour and to hour")
+	}
+	wh := &WorkingHours{}
+	var err error
+	if wh.StartHour, err = strconv.Atoi(start); err != nil {
+		return nil, fmt.Errorf("from hour: %q is not a number", start)
+	}
+	if wh.EndHour, err = strconv.Atoi(end); err != nil {
+		return nil, fmt.Errorf("to hour: %q is not a number", end)
+	}
+	if days != "" {
+		if wh.Days, err = intCSV(days, "only on days"); err != nil {
+			return nil, err
+		}
+	}
+	return wh, nil
 }
 
 func intCSV(s, label string) ([]int, error) {
@@ -460,6 +509,13 @@ func writeActionFile(path string, a *Action) error {
 	}
 	if a.Kind == KindHeartbeat {
 		fmt.Fprintf(&b, "\n[heartbeat]\ninterval_minutes = %d\n", a.Heartbeat.IntervalMinutes)
+		if wh := a.Heartbeat.WorkingHours; wh != nil {
+			b.WriteString("\n[heartbeat.working_hours]\n")
+			if len(wh.Days) > 0 {
+				fmt.Fprintf(&b, "days = %s\n", intListTOML(wh.Days))
+			}
+			fmt.Fprintf(&b, "start_hour = %d\nend_hour = %d\n", wh.StartHour, wh.EndHour)
+		}
 	} else {
 		r := a.Routine
 		fmt.Fprintf(&b, "\n[schedule]\npreset = %q\n", r.Preset)
@@ -476,7 +532,9 @@ func writeActionFile(path string, a *Action) error {
 			fmt.Fprintf(&b, "minute = %d\n", r.Minute)
 		}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".form-*.toml")
+	// The suffix must not be .toml: a temp file left behind by a killed board
+	// would otherwise load as an action of its own.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".form-*.tmp")
 	if err != nil {
 		return err
 	}

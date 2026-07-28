@@ -16,11 +16,11 @@ func writeAction(t *testing.T, dir, name, content string) {
 
 func TestLoadActions(t *testing.T) {
 	dir := t.TempDir()
-	writeAction(t, dir, "digest.toml", `
-name = "pm-digest"
+	writeAction(t, dir, "report.toml", `
+name = "nightly-report"
 kind = "routine"
-directory = "~/work/pm"
-prompt = "Run the morning digest"
+directory = "~/reports"
+prompt = "Write up yesterday's numbers"
 permission_mode = "auto"
 
 [schedule]
@@ -29,10 +29,10 @@ hours = [6]
 minute = 15
 `)
 	writeAction(t, dir, "sync.toml", `
-name = "git-sync"
+name = "build-sync"
 kind = "script"
-directory = "~/work"
-command = "./git-sync.sh"
+directory = "~/builds"
+command = "./sync.sh"
 
 [routine]
 preset = "weekdays"
@@ -45,15 +45,15 @@ hours = [6]
 	if len(actions) != 2 {
 		t.Fatalf("got %d actions", len(actions))
 	}
-	digest := actions[0]
-	if digest.Name != "pm-digest" || digest.AutoClose || digest.CLI != "claude" {
-		t.Errorf("unexpected digest action: %+v", digest)
+	report := actions[0]
+	if report.Name != "nightly-report" || report.AutoClose || report.CLI != "claude" {
+		t.Errorf("unexpected action: %+v", report)
 	}
-	if digest.Routine.Preset != "weekdays" || digest.Routine.Minute != 15 {
-		t.Errorf("[schedule] table should populate the routine spec: %+v", digest.Routine)
+	if report.Routine.Preset != "weekdays" || report.Routine.Minute != 15 {
+		t.Errorf("[schedule] table should populate the routine spec: %+v", report.Routine)
 	}
-	if !strings.HasSuffix(digest.Dir(), "/work/pm") || strings.Contains(digest.Dir(), "~") {
-		t.Errorf("Dir should expand ~: %s", digest.Dir())
+	if !strings.HasSuffix(report.Dir(), "/reports") || strings.Contains(report.Dir(), "~") {
+		t.Errorf("Dir should expand ~: %s", report.Dir())
 	}
 }
 
@@ -77,6 +77,13 @@ func TestLoadActionsRejectsInvalidPerFile(t *testing.T) {
 		"bad minute":     "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\nminute = 90\n",
 		"bad month_day":  "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\npreset = \"monthly\"\nmonth_day = 31\n",
 		"bad hour":       "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\nhours = [25]\n",
+		// The name becomes the run lock's file name.
+		"name with slash":     "name = \"a/b\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n",
+		"name with backslash": "name = \"a\\\\b\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n",
+		"dotted name":         "name = \".hidden\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n",
+		"long timeout":        "name = \"a\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\ntimeout_minutes = 1441\n",
+		"long watch":          "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\nwatch_minutes = 1441\n",
+		"empty hour range":    "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[heartbeat.working_hours]\nstart_hour = 9\nend_hour = 9\n",
 	}
 	for label, content := range cases {
 		dir := t.TempDir()
@@ -118,6 +125,41 @@ func TestLoadActionsRejectsDuplicateNames(t *testing.T) {
 	}
 	if len(actions) != 1 || len(fileErrs) != 1 || !strings.Contains(fileErrs[0].Error(), "duplicate") {
 		t.Errorf("expected first kept + duplicate error, got actions=%d errs=%v", len(actions), fileErrs)
+	}
+}
+
+func TestLoadActionsAcceptsALeapDayCron(t *testing.T) {
+	// Feb 29 is more than a year away in three years out of four.
+	dir := t.TempDir()
+	writeAction(t, dir, "leap.toml", "name = \"leap\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n[schedule]\npreset = \"cron\"\ncron = \"0 9 29 2 *\"\n")
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) != 0 || len(actions) != 1 {
+		t.Fatalf("err=%v fileErrs=%v actions=%d", err, fileErrs, len(actions))
+	}
+}
+
+// The flag strings are what actually reaches the pane; `--permission-mode
+// auto` is what the installed claude CLI accepts.
+func TestAgentCommandFlags(t *testing.T) {
+	cases := []struct {
+		cli, mode, want string
+	}{
+		{"claude", "default", "claude 'hi'"},
+		{"claude", "auto", "claude --permission-mode auto 'hi'"},
+		{"claude", "skip", "claude --dangerously-skip-permissions 'hi'"},
+		{"codex", "default", "codex 'hi'"},
+		{"codex", "auto", "codex --ask-for-approval on-request --sandbox workspace-write 'hi'"},
+		{"codex", "skip", "codex --dangerously-bypass-approvals-and-sandbox 'hi'"},
+	}
+	for _, c := range cases {
+		a := &Action{Kind: KindHeartbeat, CLI: c.cli, PermissionMode: c.mode, Prompt: "hi"}
+		got, err := a.AgentCommand()
+		if err != nil {
+			t.Fatalf("%s/%s: %v", c.cli, c.mode, err)
+		}
+		if got != c.want {
+			t.Errorf("%s/%s: got %q, want %q", c.cli, c.mode, got, c.want)
+		}
 	}
 }
 

@@ -42,6 +42,52 @@ func TestCronNext(t *testing.T) {
 	}
 }
 
+func TestCronNextFindsALeapDay(t *testing.T) {
+	// The scan runs four years, so Feb 29 resolves from a non-leap year
+	// instead of looking unsatisfiable.
+	sched, err := parseCron("0 9 29 2 *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := sched.Next(mustTime(t, "2026-07-26 12:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := mustTime(t, "2028-02-29 09:00"); !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestCronNextReportsAnUnsatisfiableExpression(t *testing.T) {
+	sched, err := parseCron("0 0 30 2 *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sched.Next(mustTime(t, "2026-07-26 12:00")); err == nil {
+		t.Error("February 30 never comes around")
+	}
+}
+
+func TestNextOccurrenceCoversBothKinds(t *testing.T) {
+	hb := &Action{Kind: KindHeartbeat, Heartbeat: HeartbeatSpec{IntervalMinutes: 30}}
+	got, err := nextOccurrence(hb, mustTime(t, "2026-07-27 09:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := mustTime(t, "2026-07-27 09:30"); !got.Equal(want) {
+		t.Errorf("heartbeat: got %s, want %s", got, want)
+	}
+
+	routine := &Action{Kind: KindRoutine, Routine: RoutineSpec{Preset: "daily", Hours: []int{6}, Minute: 15}}
+	got, err = nextOccurrence(routine, mustTime(t, "2026-07-27 09:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := mustTime(t, "2026-07-28 06:15"); !got.Equal(want) {
+		t.Errorf("routine: got %s, want %s", got, want)
+	}
+}
+
 func TestCronDomDowEitherMatches(t *testing.T) {
 	// Standard cron: with both day fields restricted, either may match.
 	sched, err := parseCron("0 0 15 * 1")
@@ -76,6 +122,13 @@ func TestWorkingHours(t *testing.T) {
 	}
 	if wh.Contains(mustTime(t, "2026-07-27 17:00")) {
 		t.Error("end hour is exclusive")
+	}
+
+	if err := (&WorkingHours{StartHour: 9, EndHour: 9}).validate(); err == nil {
+		t.Error("an empty hour range should be rejected, not read as all day")
+	}
+	if err := (&WorkingHours{StartHour: 0, EndHour: 24}).validate(); err != nil {
+		t.Errorf("0-24 is the all-day range: %v", err)
 	}
 
 	overnight := &WorkingHours{StartHour: 22, EndHour: 6}

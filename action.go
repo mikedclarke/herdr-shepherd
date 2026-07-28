@@ -89,6 +89,10 @@ func (a *Action) applyDefaults() {
 	}
 }
 
+// maxRunMinutes caps watch and timeout windows at a day: a longer one is a
+// typo, and it would pin a run for the daemon's lifetime.
+const maxRunMinutes = 1440
+
 // validate rejects rather than clamps: a silently adjusted schedule runs at a
 // time the user never asked for.
 func (a *Action) validate() error {
@@ -97,6 +101,13 @@ func (a *Action) validate() error {
 	}
 	if strings.ContainsAny(a.Name, " \t\n") {
 		return fmt.Errorf("name %q must not contain whitespace", a.Name)
+	}
+	// The name is used as a file name for the action's run lock.
+	if strings.ContainsAny(a.Name, `/\`) {
+		return fmt.Errorf("name %q must not contain a path separator", a.Name)
+	}
+	if strings.HasPrefix(a.Name, ".") {
+		return fmt.Errorf("name %q must not start with a dot", a.Name)
 	}
 	switch a.Kind {
 	case KindHeartbeat, KindRoutine:
@@ -120,6 +131,12 @@ func (a *Action) validate() error {
 	}
 	if a.Directory == "" {
 		return fmt.Errorf("%s: directory is required", a.Name)
+	}
+	if a.TimeoutMinutes > maxRunMinutes {
+		return fmt.Errorf("%s: timeout_minutes must be <= %d, got %d", a.Name, maxRunMinutes, a.TimeoutMinutes)
+	}
+	if a.WatchMinutes > maxRunMinutes {
+		return fmt.Errorf("%s: watch_minutes must be <= %d, got %d", a.Name, maxRunMinutes, a.WatchMinutes)
 	}
 	if a.Kind == KindHeartbeat {
 		if a.Heartbeat.IntervalMinutes < 1 {
@@ -150,7 +167,8 @@ func (a *Action) validate() error {
 			}
 		}
 		// A parseable expression can still be unsatisfiable (e.g. Feb 30);
-		// catch it here instead of never running.
+		// catch it here instead of never running. The scan runs from an
+		// explicit now over scanYears, so Feb 29 validates in any year.
 		if _, err := r.NextRoutine(time.Now()); err != nil {
 			return fmt.Errorf("%s: %w", a.Name, err)
 		}

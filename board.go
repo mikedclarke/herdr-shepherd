@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 
@@ -11,12 +12,13 @@ import (
 	isatty "github.com/mattn/go-isatty"
 )
 
-// cmdBoard opens the status board. From a shell (stdin is a terminal) it runs
-// the TUI right here; invoked as the manifest action (server-side, no
-// terminal) it asks herdr to host the `board` pane entrypoint instead — the
-// herdr-plus pattern, so herdr creates and tears down the pane.
+// cmdBoard opens the status board. From a shell (both stdin and stdout are a
+// terminal) it runs the TUI right here; invoked as the manifest action
+// (server-side, no terminal) or with its output piped it asks herdr to host
+// the `board` pane entrypoint instead — the herdr-plus pattern, so herdr
+// creates and tears down the pane.
 func cmdBoard() error {
-	if isatty.IsTerminal(os.Stdin.Fd()) {
+	if isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd()) {
 		return runBoardUI()
 	}
 	herdr := os.Getenv("HERDR_BIN_PATH")
@@ -45,32 +47,72 @@ func runBoardUI() error {
 	return err
 }
 
+// historyTailBytes bounds a history read. The board re-reads on every tick and
+// the run log grows to megabytes between rotations, so only the tail is
+// parsed; n records never span more than this.
+const historyTailBytes = 64 << 10
+
 // actionHistory returns the newest-first run records for one action, at most n
-// of them. Corrupt lines are skipped — a half-appended record must not blank
-// the whole history view.
+// of them, reaching back into the rotated log when the current one holds
+// fewer. Corrupt lines are skipped — a half-appended record must not blank the
+// whole history view.
 func actionHistory(path, name string, n int) []runRecord {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	var recs []runRecord
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		var r runRecord
-		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			continue
-		}
-		if r.Action == name {
-			recs = append(recs, r)
-		}
+	recs := runsFor(readRunTail(path), name)
+	if len(recs) < n {
+		recs = append(runsFor(readRunTail(path+".1"), name), recs...)
 	}
 	if len(recs) > n {
 		recs = recs[len(recs)-n:]
 	}
 	for i, j := 0, len(recs)-1; i < j; i, j = i+1, j-1 {
 		recs[i], recs[j] = recs[j], recs[i]
+	}
+	return recs
+}
+
+func runsFor(recs []runRecord, name string) []runRecord {
+	var out []runRecord
+	for _, r := range recs {
+		if r.Action == name {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// readRunTail parses the last historyTailBytes of a run log, oldest first. The
+// first line after a seek is a fragment of the record that straddles the
+// boundary, so it is dropped.
+func readRunTail(path string) []runRecord {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	partial := false
+	if info.Size() > historyTailBytes {
+		if _, err := f.Seek(-historyTailBytes, io.SeekEnd); err != nil {
+			return nil
+		}
+		partial = true
+	}
+	var recs []runRecord
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if partial {
+			partial = false
+			continue
+		}
+		var r runRecord
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			continue
+		}
+		recs = append(recs, r)
 	}
 	return recs
 }

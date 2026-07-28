@@ -1,35 +1,44 @@
 package main
 
 import (
+	"errors"
+	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
-func testDaemon(t *testing.T, started time.Time) *daemon {
+func testDaemon(t *testing.T) *daemon {
 	t.Helper()
+	dir := t.TempDir()
 	return &daemon{
-		state:   &daemonState{Actions: map[string]*actionState{}},
-		started: started,
-		running: map[string]bool{},
+		paths:          paths{ConfigDir: dir, StateDir: dir},
+		client:         &scriptedHerdr{},
+		state:          emptyState(),
+		startTimeout:   time.Minute,
+		pause:          time.Millisecond,
+		resend:         time.Minute,
+		notifiedErrors: map[string]bool{},
+		startFailures:  map[string]int{},
 	}
 }
 
 func routineAction(name string) *Action {
-	a := &Action{
+	return &Action{
 		Name: name, Kind: KindRoutine, Directory: "/tmp", Prompt: "x",
 		Routine: RoutineSpec{Preset: "weekdays", Hours: []int{6}, Minute: 15, MonthDay: 1},
 	}
-	return a
 }
 
 func TestDueRoutineFiresInsideGrace(t *testing.T) {
 	// Monday 06:15 occurrence, checked at 06:15:20 (one tick late).
 	now := mustTime(t, "2026-07-27 06:15").Add(20 * time.Second)
-	d := testDaemon(t, mustTime(t, "2026-07-20 12:00"))
-	a := routineAction("digest")
-	d.state.setLastRun("digest", mustTime(t, "2026-07-24 06:15"))
+	d := testDaemon(t)
+	a := routineAction("nightly-report")
+	d.state.setLastRun(a.Name, mustTime(t, "2026-07-24 06:15"))
 	fire, stamp := d.due(a, now)
 	if !fire {
 		t.Fatal("routine should fire just after its minute")
@@ -40,64 +49,84 @@ func TestDueRoutineFiresInsideGrace(t *testing.T) {
 }
 
 func TestDueRoutineDropsMissedOccurrenceAfterSleep(t *testing.T) {
-	// Daemon alive since the 20th, last ran Friday 06:15, machine slept
-	// through Monday 06:15 and woke at 08:55: the occurrence is consumed
-	// without firing.
+	// Last ran Friday 06:15; the machine slept through Monday 06:15 and woke
+	// at 08:55. The anchor clamp skips straight to the next occurrence: no
+	// fire, no walk through the missed one, and the same answer every tick.
 	now := mustTime(t, "2026-07-27 08:55")
-	d := testDaemon(t, mustTime(t, "2026-07-20 12:00"))
-	a := routineAction("digest")
-	d.state.setLastRun("digest", mustTime(t, "2026-07-24 06:15"))
-	fire, _ := d.due(a, now)
-	if fire {
-		t.Fatal("missed occurrence beyond grace must not fire")
+	d := testDaemon(t)
+	a := routineAction("nightly-report")
+	last := mustTime(t, "2026-07-24 06:15")
+	d.state.setLastRun(a.Name, last)
+	for i := 0; i < 3; i++ {
+		if fire, _ := d.due(a, now.Add(time.Duration(i)*30*time.Second)); fire {
+			t.Fatalf("missed occurrence beyond grace must not fire (tick %d)", i)
+		}
 	}
-	if got, want := d.state.lastRun("digest"), mustTime(t, "2026-07-27 06:15"); !got.Equal(want) {
-		t.Errorf("missed occurrence should be consumed, lastRun=%s", got)
-	}
-	// The following tick must not fire either.
-	if fire, _ := d.due(a, now.Add(30*time.Second)); fire {
-		t.Fatal("consumed occurrence fired on the next tick")
+	if got := d.state.lastRun(a.Name); !got.Equal(last) {
+		t.Errorf("a skipped occurrence must not be stamped, lastRun=%s", got)
 	}
 }
 
 func TestDueRoutineShortWakeStillFires(t *testing.T) {
 	// Wake at 06:20 — five minutes late is within grace and should run.
 	now := mustTime(t, "2026-07-27 06:20")
-	d := testDaemon(t, mustTime(t, "2026-07-20 12:00"))
-	a := routineAction("digest")
-	d.state.setLastRun("digest", mustTime(t, "2026-07-24 06:15"))
+	d := testDaemon(t)
+	a := routineAction("nightly-report")
+	d.state.setLastRun(a.Name, mustTime(t, "2026-07-24 06:15"))
 	if fire, _ := d.due(a, now); !fire {
 		t.Fatal("occurrence within the grace window should fire")
 	}
 }
 
 func TestDueRoutineNoBackfillOnRestart(t *testing.T) {
-	// Daemon started at 08:55 with no recorded runs: today's 06:15 must not fire.
-	now := mustTime(t, "2026-07-27 08:55")
-	d := testDaemon(t, now.Add(-30*time.Second))
-	if fire, _ := d.due(routineAction("digest"), now); fire {
+	// A restart with no recorded runs must not backfill: 08:55 is well past
+	// the 06:15 occurrence, but a restart inside the grace window still runs
+	// it, exactly as a daemon that had been up would have.
+	d := testDaemon(t)
+	a := routineAction("nightly-report")
+	if fire, _ := d.due(a, mustTime(t, "2026-07-27 08:55")); fire {
 		t.Fatal("restart must not backfill earlier occurrences")
+	}
+	if fire, stamp := d.due(a, mustTime(t, "2026-07-27 06:17")); !fire {
+		t.Errorf("restart inside the grace window should still fire, stamp=%s", stamp)
+	}
+}
+
+func TestDueRoutineNewActionFiresNextOccurrence(t *testing.T) {
+	// An action added to a long-running daemon has no last run at all; it
+	// must fire on its next occurrence rather than after a walk.
+	d := testDaemon(t)
+	a := routineAction("nightly-report")
+	if fire, _ := d.due(a, mustTime(t, "2026-07-27 05:00")); fire {
+		t.Fatal("a new action must not fire before its first occurrence")
+	}
+	fire, stamp := d.due(a, mustTime(t, "2026-07-27 06:15").Add(20*time.Second))
+	if !fire {
+		t.Fatal("a new action should fire on its next occurrence")
+	}
+	if want := mustTime(t, "2026-07-27 06:15"); !stamp.Equal(want) {
+		t.Errorf("stamp should be the occurrence time, got %s", stamp)
 	}
 }
 
 func TestDueClockStepBackwards(t *testing.T) {
 	now := mustTime(t, "2026-07-27 06:16")
-	d := testDaemon(t, mustTime(t, "2026-07-20 12:00"))
-	a := routineAction("digest")
-	d.state.setLastRun("digest", now.Add(2*time.Hour))
+	d := testDaemon(t)
+	a := routineAction("nightly-report")
+	d.state.setLastRun(a.Name, now.Add(2*time.Hour))
 	fire, _ := d.due(a, now)
 	if fire {
 		t.Fatal("should not fire immediately after a backwards clock step")
 	}
-	if d.state.lastRun("digest").After(now) {
+	if d.state.lastRun(a.Name).After(now) {
 		t.Error("future last-run stamp should be reset to now")
 	}
 }
 
 func TestDueHeartbeat(t *testing.T) {
-	d := testDaemon(t, mustTime(t, "2026-07-20 12:00"))
+	d := testDaemon(t)
 	a := &Action{
-		Name: "hb", Kind: KindHeartbeat, Directory: "/tmp", Prompt: "x",
+		Name: "hourly-check", Kind: KindHeartbeat, Directory: "/tmp", Prompt: "x",
 		Heartbeat: HeartbeatSpec{
 			IntervalMinutes: 60,
 			WorkingHours:    &WorkingHours{Days: []int{1, 2, 3, 4, 5}, StartHour: 9, EndHour: 16},
@@ -109,12 +138,266 @@ func TestDueHeartbeat(t *testing.T) {
 	if fire, _ := d.due(a, mustTime(t, "2026-07-27 09:30")); !fire {
 		t.Error("never-run heartbeat should fire inside working hours")
 	}
-	d.state.setLastRun("hb", mustTime(t, "2026-07-27 09:30"))
+	d.state.setLastRun(a.Name, mustTime(t, "2026-07-27 09:30"))
 	if fire, _ := d.due(a, mustTime(t, "2026-07-27 10:00")); fire {
 		t.Error("heartbeat before interval elapsed")
 	}
 	if fire, _ := d.due(a, mustTime(t, "2026-07-27 10:30")); !fire {
 		t.Error("heartbeat after interval elapsed")
+	}
+}
+
+func TestNextRunMatchesDue(t *testing.T) {
+	// The board's NEXT RUN column and the daemon's due check share one
+	// computation, so a due occurrence never displays as already past.
+	now := mustTime(t, "2026-07-27 06:17")
+	d := testDaemon(t)
+	a := routineAction("nightly-report")
+	a.applyDefaults()
+	fire, stamp := d.due(a, now)
+	if !fire {
+		t.Fatal("occurrence inside grace should fire")
+	}
+	if got := nextRun(a, time.Time{}, now); !got.Equal(stamp) {
+		t.Errorf("nextRun %s should match the firing occurrence %s", got, stamp)
+	}
+	disabled := false
+	a.Enabled = &disabled
+	if got := nextRun(a, time.Time{}, now); !got.IsZero() {
+		t.Errorf("a disabled action has no next run, got %s", got)
+	}
+}
+
+func TestTickSkipsDisabledAndRunningActions(t *testing.T) {
+	d := testDaemon(t)
+	dir := d.paths.ActionsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAction(t, dir, "off.toml", "name = \"paused\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\nenabled = false\n[schedule]\npreset = \"cron\"\ncron = \"* * * * *\"\n")
+	writeAction(t, dir, "busy.toml", "name = \"busy\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n[schedule]\npreset = \"cron\"\ncron = \"* * * * *\"\n")
+	release, ok, err := tryRunLock(d.paths.StateDir, "busy")
+	if err != nil || !ok {
+		t.Fatalf("lock setup: ok=%v err=%v", ok, err)
+	}
+	defer release()
+
+	d.tick()
+	if got := d.state.lastRun("paused"); !got.IsZero() {
+		t.Errorf("a disabled action must not be stamped, got %s", got)
+	}
+	if got := d.state.lastRun("busy"); !got.IsZero() {
+		t.Errorf("an action already running must not be stamped, got %s", got)
+	}
+	if recs := readRunLog(t, d.paths.RunLogFile()); len(recs) != 0 {
+		t.Errorf("no run should have happened, got %+v", recs)
+	}
+}
+
+func TestTickKeepsStateWhileAFileIsBroken(t *testing.T) {
+	// Pruning on a tick that could not read every file drops the schedule of
+	// whatever failed to parse, and the heartbeat fires again the moment the
+	// file is fixed.
+	d := testDaemon(t)
+	d.startTimeout = 10 * time.Millisecond
+	dir := d.paths.ActionsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := time.Now()
+	d.state.setLastRun("hourly-check", ran)
+	d.state.setLastRun("gone", mustTime(t, "2026-07-27 06:15"))
+
+	// The heartbeat's own file is the unreadable one.
+	writeAction(t, dir, "check.toml", "name = \"hourly-check\nkind=")
+	d.tick()
+	if got := d.state.lastRun("hourly-check"); !got.Equal(ran) {
+		t.Fatalf("state must survive a tick with a parse error, got %s", got)
+	}
+	if got := d.state.lastRun("gone"); got.IsZero() {
+		t.Fatal("no state may be pruned on a tick with a parse error")
+	}
+
+	writeAction(t, dir, "check.toml", "name = \"hourly-check\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[heartbeat]\ninterval_minutes = 1440\n")
+	d.tick()
+	if got := d.state.lastRun("hourly-check"); !got.Equal(ran) {
+		t.Errorf("the heartbeat should not be due again, got %s", got)
+	}
+	if got := d.state.lastRun("gone"); !got.IsZero() {
+		t.Errorf("a clean tick should prune state for actions that are gone, got %s", got)
+	}
+}
+
+func TestTickNotifiesEachConfigErrorOnce(t *testing.T) {
+	d := testDaemon(t)
+	fake := d.client.(*scriptedHerdr)
+	dir := d.paths.ActionsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAction(t, dir, "broken.toml", "name = \"broken\nkind=")
+
+	d.tick()
+	d.tick()
+	if _, _, notices, _ := fake.counts(); notices != 1 {
+		t.Fatalf("a repeated config error should notify once, got %v", fake.notices)
+	}
+	writeAction(t, dir, "broken.toml", "name = \"fixed\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\nenabled = false\n")
+	d.tick()
+	writeAction(t, dir, "broken.toml", "name = \"broken\nkind=")
+	d.tick()
+	if _, _, notices, _ := fake.counts(); notices != 2 {
+		t.Fatalf("an error that comes back after a fix should notify again, got %v", fake.notices)
+	}
+}
+
+func scriptAction(name, command string) *Action {
+	a := &Action{Name: name, Kind: KindScript, Directory: "/tmp", Command: command}
+	a.applyDefaults()
+	return a
+}
+
+func TestFireRecordsScriptRun(t *testing.T) {
+	d := testDaemon(t)
+	a := scriptAction("build-sync", "echo done")
+	d.fire(a, time.Time{})
+	if got := d.state.lastStatus(a.Name); got != "completed" {
+		t.Fatalf("got status %q", got)
+	}
+	recs := readRunLog(t, d.paths.RunLogFile())
+	if len(recs) != 1 || recs[0].Status != "completed" || recs[0].Detail != "done" {
+		t.Fatalf("expected one completed record with the script output, got %+v", recs)
+	}
+	if runLockHeld(d.paths.StateDir, a.Name) {
+		t.Error("the run lock must be released once the run finishes")
+	}
+}
+
+func TestFireSkipsAnActionAlreadyRunning(t *testing.T) {
+	d := testDaemon(t)
+	a := scriptAction("build-sync", "echo done")
+	release, ok, err := tryRunLock(d.paths.StateDir, a.Name)
+	if err != nil || !ok {
+		t.Fatalf("lock setup: ok=%v err=%v", ok, err)
+	}
+	d.fire(a, time.Time{})
+	if got := d.state.lastStatus(a.Name); got != "" {
+		t.Fatalf("a skipped run must not record a status, got %q", got)
+	}
+	if recs := readRunLog(t, d.paths.RunLogFile()); len(recs) != 0 {
+		t.Fatalf("a skipped run must not append history, got %+v", recs)
+	}
+	release()
+	d.fire(a, time.Time{})
+	if got := d.state.lastStatus(a.Name); got != "completed" {
+		t.Fatalf("the action should run once the lock is free, got %q", got)
+	}
+}
+
+func TestFireReleasesLockAfterTimeoutKill(t *testing.T) {
+	d := testDaemon(t)
+	// Zero minutes is not reachable through applyDefaults; built directly it
+	// makes the timeout path immediate.
+	a := &Action{Name: "build-sync", Kind: KindScript, Directory: "/tmp", Command: "sleep 60"}
+	d.fire(a, time.Time{})
+	if got := d.state.lastStatus(a.Name); got != "error" {
+		t.Fatalf("a timed-out script should record an error, got %q", got)
+	}
+	if runLockHeld(d.paths.StateDir, a.Name) {
+		t.Error("the run lock must be released after a timeout kill")
+	}
+}
+
+func TestFireGivesTheOccurrenceBackWhileStartsFail(t *testing.T) {
+	fake := &scriptedHerdr{createErr: errors.New("socket down")}
+	d := agentTestDaemon(t, fake)
+	a := watchedAction()
+	prev := mustTime(t, "2026-07-27 06:15")
+	stamp := mustTime(t, "2026-07-28 06:15")
+
+	for attempt := 1; attempt < maxStartAttempts; attempt++ {
+		d.state.setLastRun(a.Name, stamp)
+		d.fire(a, prev)
+		if got := d.state.lastRun(a.Name); !got.Equal(prev) {
+			t.Fatalf("attempt %d should hand the occurrence back, lastRun=%s", attempt, got)
+		}
+		if got := d.state.lastStatus(a.Name); got != "" {
+			t.Fatalf("attempt %d should not record a status, got %q", attempt, got)
+		}
+	}
+	d.state.setLastRun(a.Name, stamp)
+	d.fire(a, prev)
+	if got := d.state.lastStatus(a.Name); got != "error" {
+		t.Fatalf("the last attempt should record the failure, got %q", got)
+	}
+	if got := d.state.lastRun(a.Name); !got.Equal(stamp) {
+		t.Errorf("the last attempt keeps the occurrence, lastRun=%s", got)
+	}
+
+	// A start failure count must not follow the action into its next run.
+	fake.mu.Lock()
+	fake.createErr = nil
+	fake.waits = []waitStep{{state: "working"}, {state: "done"}}
+	fake.mu.Unlock()
+	d.fire(a, prev)
+	d.mu.Lock()
+	attempts := d.startFailures[a.Name]
+	d.mu.Unlock()
+	if attempts != 0 {
+		t.Errorf("a successful run should clear the start-failure count, got %d", attempts)
+	}
+}
+
+func TestFireStampsHeartbeatCompletion(t *testing.T) {
+	// A heartbeat longer than its interval must not come due the moment it
+	// finishes, so the stamp is the completion, not the start.
+	fake := &scriptedHerdr{waits: []waitStep{{state: "working"}, {state: "done"}}}
+	d := agentTestDaemon(t, fake)
+	a := &Action{Name: "hourly-check", Kind: KindHeartbeat, Directory: "/tmp", Prompt: "x"}
+	a.applyDefaults()
+	started := time.Now()
+	d.state.setLastRun(a.Name, mustTime(t, "2026-07-27 06:15"))
+	d.fire(a, time.Time{})
+	if got := d.state.lastRun(a.Name); got.Before(started) {
+		t.Errorf("heartbeat should be stamped with its completion, got %s", got)
+	}
+}
+
+func TestSeedExamplesLoads(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "actions")
+	seedExamples(dir)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) != 0 {
+		t.Fatalf("the seeded example must load cleanly: err=%v fileErrs=%v", err, fileErrs)
+	}
+	if len(actions) != 1 || actions[0].Name != "example-heartbeat" {
+		t.Fatalf("got %d actions: %+v", len(actions), actions)
+	}
+	if actions[0].IsEnabled() {
+		t.Error("the seeded example must arrive disabled")
+	}
+}
+
+func TestRotateLog(t *testing.T) {
+	defer log.SetOutput(os.Stderr)
+	d := testDaemon(t)
+	path := filepath.Join(t.TempDir(), "shepherd.log")
+	d.openLog(path)
+	defer d.closeLog()
+	if _, err := d.logFile.Write(make([]byte, daemonLogMaxBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	d.rotateLog()
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("the oversized log should be rotated: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != 0 {
+		t.Fatalf("a fresh log should be open: %v %+v", err, info)
+	}
+	log.Printf("after rotation")
+	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
+		t.Fatalf("logging should continue into the new file: %v", err)
 	}
 }
 
@@ -130,6 +413,20 @@ func TestTailBuffer(t *testing.T) {
 	}
 	if got := b2.String(); !strings.HasSuffix(got, "chunk-") || len(got) > 64 {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestTailStringKeepsRunesIntact(t *testing.T) {
+	s := strings.Repeat("é", 20)
+	got := tailString(s, 9)
+	if !strings.HasPrefix(got, tailMarker) {
+		t.Fatalf("a trimmed string should be marked: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("trimming split a rune: %q", got)
+	}
+	if got := tailString("short", 100); got != "short" {
+		t.Errorf("a string inside the limit is returned as-is, got %q", got)
 	}
 }
 

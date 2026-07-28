@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"text/tabwriter"
 	"time"
 )
@@ -29,7 +29,7 @@ func cmdList() error {
 		fmt.Printf("No actions. Add *.toml files to %s\n", p.ActionsDir())
 		return nil
 	}
-	st := loadState(p.StateFile())
+	st := readState(p.StateFile())
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tKIND\tENABLED\tSCHEDULE\tLAST RUN\tNEXT RUN")
 	now := time.Now()
@@ -57,27 +57,25 @@ func scheduleSummary(a *Action) string {
 	}
 }
 
+// nextRun anchors exactly as due does, so the displayed next run is the one
+// the daemon will actually fire.
 func nextRun(a *Action, last time.Time, now time.Time) time.Time {
 	if !a.IsEnabled() {
 		return time.Time{}
 	}
-	switch a.Kind {
-	case KindHeartbeat:
+	anchor := last
+	if a.Kind == KindHeartbeat {
 		if last.IsZero() {
 			return now
 		}
-		return a.Heartbeat.NextHeartbeat(last)
-	default:
-		anchor := now
-		if last.After(anchor) {
-			anchor = last
-		}
-		next, err := a.Routine.NextRoutine(anchor)
-		if err != nil {
-			return time.Time{}
-		}
-		return next
+	} else if grace := now.Add(-catchUpGrace); anchor.Before(grace) {
+		anchor = grace
 	}
+	next, err := nextOccurrence(a, anchor)
+	if err != nil {
+		return time.Time{}
+	}
+	return next
 }
 
 func fmtTime(t time.Time, suffix string) string {
@@ -96,7 +94,7 @@ func fmtTime(t time.Time, suffix string) string {
 
 func cmdStatus(notify bool) error {
 	p := resolvePaths()
-	st := loadState(p.StateFile())
+	st := readState(p.StateFile())
 	beat := st.heartbeatAt()
 	alive := !beat.IsZero() && time.Since(beat) < 3*tickInterval
 	title := "Shepherd: daemon not running"
@@ -167,18 +165,40 @@ func cmdRun(name string) error {
 		return fmt.Errorf("no action named %q; available: %v", name, names)
 	}
 
+	release, ok, err := tryRunLock(p.StateDir, action.Name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s is already running (another process)", action.Name)
+	}
+	defer release()
+
 	if action.Kind == KindScript {
 		fmt.Printf("Running %s in %s\n", action.Name, action.Dir())
-		cmd := exec.Command("sh", "-c", action.Command)
-		cmd.Dir = action.Dir()
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		out := &tailBuffer{max: outputTailMax}
+		runErr := runScriptOnce(action, io.MultiWriter(os.Stdout, out))
+		rec := runRecord{
+			At: time.Now(), Action: action.Name, Kind: action.Kind,
+			Status: "completed", Detail: out.String(), Trigger: triggerManual,
+		}
+		if runErr != nil {
+			rec.Status, rec.Detail = "error", runErr.Error()
+		}
+		if lerr := appendRunLog(p.RunLogFile(), rec); lerr != nil {
+			fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
+		}
+		return runErr
 	}
 
+	// The lock goes with this process: a manual agent run is handed to the
+	// user once its session is up, and nobody watches it after that.
 	wsID, err := startAgentRun(action)
 	if err != nil {
 		return err
+	}
+	if lerr := recordManualStart(action, wsID); lerr != nil {
+		fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
 	}
 	fmt.Printf("Started %s in workspace %s\n", action.Name, wsID)
 	return nil
@@ -186,25 +206,26 @@ func cmdRun(name string) error {
 
 // startAgentRun opens a manual run's workspace and submits the agent command.
 // Shared by `run` and the board; both keep manual-run semantics (no watcher,
-// no auto-close, no schedule coordination).
+// no auto-close, no schedule coordination). It must not write to the
+// terminal: the board calls it from inside the TUI's alternate screen.
 func startAgentRun(a *Action) (workspaceID string, err error) {
 	client, err := newHerdrClient()
 	if err != nil {
 		return "", err
 	}
-	command, err := a.AgentCommand()
+	wsID, _, err := launchAgentWorkspace(client, a, shellSettle)
 	if err != nil {
-		return "", err
-	}
-	wsID, paneID, err := client.workspaceCreate(a.Dir(), "Shepherd · "+a.Name, map[string]string{
-		"SHEPHERD_ACTION": a.Name,
-	})
-	if err != nil {
-		return "", err
-	}
-	time.Sleep(shellSettle)
-	if err := client.runCommand(paneID, command); err != nil {
 		return "", err
 	}
 	return wsID, nil
+}
+
+// recordManualStart writes the started record — the only trace a manual agent
+// run leaves. Callers report a failure their own way (stderr or status line).
+func recordManualStart(a *Action, wsID string) error {
+	p := resolvePaths()
+	return appendRunLog(p.RunLogFile(), runRecord{
+		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: "started",
+		Detail: "workspace " + wsID, Trigger: triggerManual,
+	})
 }
