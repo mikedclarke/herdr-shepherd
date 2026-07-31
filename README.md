@@ -62,6 +62,28 @@ ln -s ~/.config/herdr/plugins/github/mikedclarke.herdr-shepherd-*/bin/herdr-shep
 
 (with `~/.local/bin` on your `$PATH`). Every example below that says `herdr-shepherd` assumes you did this; otherwise call `./bin/herdr-shepherd` from the plugin directory.
 
+## Update
+
+Shepherd has no updater of its own; updates ride herdr's plugin mechanics.
+
+**Installed from GitHub:** herdr pins the commit it installed (visible in `herdr plugin list`). To move to the latest, reinstall:
+
+```bash
+herdr plugin uninstall mikedclarke.herdr-shepherd
+herdr plugin install mikedclarke/herdr-shepherd
+```
+
+Pass `--ref v0.6.0` to pin a release instead of taking the default branch. Your actions and run history do not live in the plugin's own directory — actions are TOML files in the plugin config dir (`herdr plugin config-dir mikedclarke.herdr-shepherd`) and history is under the plugin state dir — so replacing the plugin replaces the code, not your schedules.
+
+**Linked checkout:**
+
+```bash
+git pull
+sh scripts/build.sh
+```
+
+The already-running daemon keeps the binary it started with; restart the herdr server to restart it on the new build (scheduling changes need this, display-only changes don't). The board, status action, and CLI pick up the new binary the next time they launch.
+
 ## The board
 
 The board is a live status view of every action: schedule, last run, and next run, plus daemon liveness. Refreshed every two seconds, so a finishing run shows up on its own, and an action shows `running…` while a run is in flight — scheduled or manual, this process or another.
