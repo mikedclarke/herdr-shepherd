@@ -94,6 +94,8 @@ The already-running daemon keeps the binary it started with; restart the herdr s
 
 The board is a live status view of every action: schedule, last run, and next run, plus daemon liveness. Refreshed every two seconds, so a finishing run shows up on its own, and an action shows `running…` while a run is in flight — scheduled or manual, this process or another.
 
+![The board as a zoomed herdr pane: pausing an action, viewing run history, and the guided new-action form](docs/demo.gif)
+
 Open it by binding a key in herdr's `config.toml`:
 
 ```toml
