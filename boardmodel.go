@@ -708,7 +708,7 @@ func (m *boardModel) viewBoard() string {
 	b.WriteString(styleHeader.Render("Shepherd "+version) +
 		styleDim.Render("  ·  ") + daemon +
 		styleDim.Render(fmt.Sprintf("  ·  %d/%d enabled", enabled, total)) + "\n")
-	b.WriteString(styleDim.Render(m.paths.ActionsDir()) + "\n\n")
+	b.WriteString(styleDim.Render(contractPath(m.paths.ActionsDir())) + "\n\n")
 
 	b.WriteString(styleDim.Render(m.clamp(fmt.Sprintf("  %-22s %-9s %-28s %-20s %s", "NAME", "KIND", "SCHEDULE", "LAST RUN", "NEXT RUN"))) + "\n")
 
@@ -806,7 +806,7 @@ func (m *boardModel) viewDetail() string {
 			b.WriteString(styleDim.Render(fmt.Sprintf("  %-12s", k)) + v + "\n")
 		}
 	}
-	field("file", a.SourceFile)
+	field("file", contractPath(a.SourceFile))
 	field("directory", a.Directory)
 	field("schedule", scheduleDetail(a))
 	enabled := "yes"

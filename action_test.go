@@ -187,3 +187,18 @@ func TestAgentCommand(t *testing.T) {
 		t.Errorf("default mode should add no flags: %q", got)
 	}
 }
+
+func TestContractPath(t *testing.T) {
+	t.Setenv("HOME", "/home/shep")
+	cases := map[string]string{
+		"/home/shep/.config/herdr/actions": "~/.config/herdr/actions",
+		"/home/shep":                       "~",
+		"/home/shepherd/actions":           "/home/shepherd/actions",
+		"/etc/herdr":                       "/etc/herdr",
+	}
+	for in, want := range cases {
+		if got := contractPath(in); got != want {
+			t.Errorf("contractPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

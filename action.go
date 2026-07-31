@@ -196,6 +196,22 @@ func expandPath(p string) string {
 	return p
 }
 
+// contractPath is the display-side inverse of expandPath: a path under the
+// home directory renders as ~/... so views stay short and machine-agnostic.
+func contractPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+"/") {
+		return "~" + p[len(home):]
+	}
+	return p
+}
+
 // AgentCommand builds the shell command that starts the agent session with the
 // action's prompt. Flags match what each CLI accepts for its permission modes.
 func (a *Action) AgentCommand() (string, error) {

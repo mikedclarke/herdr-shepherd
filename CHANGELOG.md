@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - Unreleased
+## [0.6.0] - 2026-07-31
 
 ### Added
 
@@ -40,6 +40,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   firing semantics: heartbeats note that a missed run fires late rather than being
   skipped, routines and scripts note the missed-run grace after which an occurrence
   is dropped.
+- Paths under the home directory render as `~/…` in the board's header and detail
+  view.
+- `go.mod` no longer pins a patch release of Go.
+- Both manifest actions declare `contexts = ["global"]`.
+- README: corrected the plugin-menu, log-rotation, `auto_close`, and `$PATH` claims;
+  added a first-run walkthrough, a defaults table, the board's key list, where config
+  and state live, how errors surface, and the platform and filesystem caveats.
 
 ### Fixed
 
@@ -83,14 +90,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The board's next-run column is computed by the same code the daemon schedules with.
 - The form's temporary files are suffixed `.tmp`, so one left behind by a killed
   board session no longer shows up as a broken action row.
-
-### Changed
-
-- `go.mod` no longer pins a patch release of Go.
-- Both manifest actions declare `contexts = ["global"]`.
-- README: corrected the plugin-menu, log-rotation, `auto_close`, and `$PATH` claims;
-  added a first-run walkthrough, a defaults table, the board's key list, where config
-  and state live, how errors surface, and the platform and filesystem caveats.
 
 ## [0.5.1] - 2026-07-28
 

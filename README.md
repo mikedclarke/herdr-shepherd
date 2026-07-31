@@ -1,8 +1,14 @@
 # herdr-shepherd
 
+[![release](https://img.shields.io/github/v/release/mikedclarke/herdr-shepherd)](https://github.com/mikedclarke/herdr-shepherd/releases)
+[![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.7.0-blue)](https://herdr.dev)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Scheduled agent sessions for [herdr](https://herdr.dev): heartbeats, cron routines, and scripts scheduled, in the right directory, visible in the herd.
 
 herdr shows you what your agents are doing. Shepherd decides when they run.
+
+![The Shepherd board: every action with its schedule, last run, and next run](docs/board.png)
 
 ## What it does
 
@@ -27,7 +33,7 @@ sh scripts/build.sh
 herdr plugin link /path/to/herdr-shepherd
 ```
 
-`scripts/build.sh` prefers a local Go toolchain (an exact build of the source you have) and falls back to `scripts/install.sh`, which downloads the matching prebuilt binary for your OS and architecture from the GitHub release and checks it against the release's `SHA256SUMS`. No releases are published yet, so until the first one the fallback exits with that message and a Go toolchain is required.
+`scripts/build.sh` prefers a local Go toolchain (an exact build of the source you have) and falls back to `scripts/install.sh`, which downloads the matching prebuilt binary for your OS and architecture from the GitHub release and checks it against the release's `SHA256SUMS` — so no Go toolchain is required.
 
 Installing registers `Shepherd: Board` and `Shepherd: Status` as plugin actions, and a startup hook that spawns the scheduler daemon whenever the herdr server starts. herdr has no built-in menu for plugin actions — reach them with a keybinding (below) or `herdr plugin action invoke`.
 
@@ -225,7 +231,7 @@ Validation rejects rather than clamps — a silently adjusted schedule runs at a
 - **Idle is not finished.** A freshly launched agent, and an agent between turns, both report `idle`. Shepherd re-checks before calling a run done, so a mid-run lull no longer ends the watch; only a sustained idle or an explicit `done` is terminal.
 - **Completed runs stay visible.** By default a finished session stays in the herd for review, herdr's normal workflow. Set `auto_close = true` to close its workspace when the run reaches a terminal state instead — including a run that was blocked at some point and then finished. A session that is still blocked when its watch window expires is left open either way.
 - **Blocked notifies once.** A `blocked` session raises one notification per run and keeps being watched; it does not re-notify every time the agent goes back to waiting.
-- **Manual runs are yours.** `herdr-shepherd run <name>` and the board's `r` bypass the schedule entirely: no watcher, no auto-close, and no coordination with the next scheduled run. A manual agent run opens the workspace, submits the command, and hands it to you — history gets one `started` record and nothing more, because nothing is watching for the end. A manual script run is synchronous: it runs in front of you, streams stdout and stderr straight to your terminal, obeys the action's `timeout_minutes`, and exits with the command's own status. Either way the run is recorded with `trigger: "manual"`, so manual and scheduled runs are told apart in the history, and neither touches the schedule's state.
+- **Manual runs are yours.** `herdr-shepherd run <name>` and the board's `r` bypass the schedule entirely: no watcher, no auto-close, no effect on the next scheduled run. A manual agent run opens the workspace, submits the command, and hands the session to you — history gets one `started` record, because nothing is watching for the end. A manual script run is synchronous: it streams output to your terminal, obeys the action's `timeout_minutes`, and exits with the command's own status. Either way the run is recorded with `trigger: "manual"`.
 - **Agent commands are typed into a shell.** Shepherd submits the agent invocation as a POSIX-quoted command line into the run's pane, so that pane's shell must be sh-compatible (bash, zsh, dash, ksh). A fish or nu login shell will mangle the quoting.
 - **DST:** on fall-back days the repeated hour runs once, not twice. On spring-forward days a job scheduled inside the skipped hour does not run that day — the local time simply never occurs.
 
