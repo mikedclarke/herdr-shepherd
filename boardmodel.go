@@ -317,7 +317,7 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.releaseRun(msg.name)
 		switch {
 		case msg.err != nil:
-			m.note(styleError.Render(fmt.Sprintf("%s failed: %v — %s", msg.name, msg.err, firstLine(msg.tail))))
+			m.note(styleError.Render(fmt.Sprintf("%s failed: %v: %s", msg.name, msg.err, firstLine(msg.tail))))
 		case msg.logErr != nil:
 			m.note(styleError.Render(fmt.Sprintf("%s completed; run log: %v", msg.name, msg.logErr)))
 		default:

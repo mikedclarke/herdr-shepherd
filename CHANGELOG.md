@@ -14,7 +14,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   action the daemon is already running, and the schedule skips an action you are
   running by hand. Board rows show `running…` for scheduled runs too.
 - Run history records a `trigger` field, so manual runs are distinguishable from
-  scheduled ones, and manual runs — which the daemon never watched — now appear in
+  scheduled ones, and manual runs (which the daemon never watched) now appear in
   the history at all.
 - Two run statuses: `started`, written when an agent session is launched, and
   `interrupted`, written at daemon start for a run that was still `started` when the
@@ -75,7 +75,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `SIGTERM` and `SIGINT` shut the daemon down cleanly and release its lock.
 - Config-error notifications are rebuilt each tick, so the set can't grow without
   bound and a recurring error notifies again after it was fixed.
-- The board and the CLI no longer quarantine a corrupt `state.json` — only the daemon
+- The board and the CLI no longer quarantine a corrupt `state.json`; only the daemon
   does. Reading the board can't cost you your schedule state.
 - The board reads only the tail of the run log, falls back to the rotated file when
   the current one is short, and caches on size and modification time, so the two-second
@@ -98,7 +98,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Startup detection required `working` or `blocked` before treating a run as started.
   A freshly launched agent reports `idle` for a few seconds before its first turn
   registers, and accepting `idle` or `done` there ended the watch seconds into a real
-  run — masking stalls and skipping every later notification. A short `done`-only
+  run, masking stalls and skipping every later notification. A short `done`-only
   probe keeps runs that finish inside one wait slice from being misreported, and a
   pane that never starts working reports `attention` instead of success.
 - The daemon's herdr client became an interface, with scripted-fake regression tests
@@ -117,7 +117,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
-- Right-click gestures — herdr owns the pane context menu, so those clicks never
+- Right-click gestures: herdr owns the pane context menu, so those clicks never
   reached the TUI.
 
 ## [0.4.0] - 2026-07-27
