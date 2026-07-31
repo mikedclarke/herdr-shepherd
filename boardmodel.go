@@ -710,7 +710,7 @@ func (m *boardModel) viewBoard() string {
 		styleDim.Render(fmt.Sprintf("  ·  %d/%d enabled", enabled, total)) + "\n")
 	b.WriteString(styleDim.Render(m.paths.ActionsDir()) + "\n\n")
 
-	b.WriteString(styleDim.Render(m.clamp(fmt.Sprintf("  %-22s %-9s %-22s %-20s %s", "NAME", "KIND", "SCHEDULE", "LAST RUN", "NEXT RUN"))) + "\n")
+	b.WriteString(styleDim.Render(m.clamp(fmt.Sprintf("  %-22s %-9s %-28s %-20s %s", "NAME", "KIND", "SCHEDULE", "LAST RUN", "NEXT RUN"))) + "\n")
 
 	top := m.scrollTop()
 	for i, r := range m.rows[top : top+m.visibleRows()] {
@@ -757,7 +757,7 @@ func (m *boardModel) renderRow(r boardRow) string {
 	}
 	line := m.clamp(fmt.Sprintf("%s %s %s %s %s %s",
 		dot, pad(truncate(a.Name, 22), 22), pad(string(a.Kind), 9),
-		pad(truncate(scheduleSummary(a), 22), 22), pad(truncate(last, 20), 20), next))
+		pad(truncate(scheduleSummary(a), 28), 28), pad(truncate(last, 20), 20), next))
 	if !a.IsEnabled() {
 		return styleDisabled.Render(line)
 	}
@@ -808,7 +808,7 @@ func (m *boardModel) viewDetail() string {
 	}
 	field("file", a.SourceFile)
 	field("directory", a.Directory)
-	field("schedule", scheduleSummary(a))
+	field("schedule", scheduleDetail(a))
 	enabled := "yes"
 	if !a.IsEnabled() {
 		enabled = "no (paused)"

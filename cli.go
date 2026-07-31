@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 )
@@ -44,17 +46,106 @@ func cmdList() error {
 func scheduleSummary(a *Action) string {
 	switch a.Kind {
 	case KindHeartbeat:
-		s := fmt.Sprintf("every %dm", a.Heartbeat.IntervalMinutes)
-		if wh := a.Heartbeat.WorkingHours; wh != nil {
-			s += fmt.Sprintf(" (%02d-%02dh)", wh.StartHour, wh.EndHour)
+		h := a.Heartbeat
+		wh := h.WorkingHours
+		if wh == nil {
+			return intervalLabel(h.IntervalMinutes)
 		}
-		return s
+		if h.IntervalMinutes >= windowMinutes(wh) {
+			return fmt.Sprintf("%s ~%02d:00", dayLabel(wh.Days), wh.StartHour)
+		}
+		return fmt.Sprintf("%s, %s %02d-%02dh",
+			intervalLabel(h.IntervalMinutes), dayLabel(wh.Days), wh.StartHour, wh.EndHour)
 	default:
-		if a.Routine.Preset == "cron" {
-			return a.Routine.Cron
+		r := a.Routine
+		switch r.Preset {
+		case "cron":
+			return r.Cron
+		case "monthly":
+			return fmt.Sprintf("monthly day %d %s", r.MonthDay, hoursLabel(r.Hours, r.Minute))
+		case "weekdays":
+			return "weekdays " + hoursLabel(r.Hours, r.Minute)
+		case "days":
+			return dayLabel(r.Days) + " " + hoursLabel(r.Hours, r.Minute)
+		default:
+			return "daily " + hoursLabel(r.Hours, r.Minute)
 		}
-		return fmt.Sprintf("%s %s:%02d", a.Routine.Preset, joinInts(uniqueSorted(a.Routine.Hours, 0, 23)), a.Routine.Minute)
 	}
+}
+
+// scheduleDetail is the long form for detail views: the summary plus the firing
+// semantics that the compact form can't carry (heartbeats fire late when a run
+// is missed; routines and scripts skip occurrences older than the catch-up grace).
+func scheduleDetail(a *Action) string {
+	s := scheduleSummary(a)
+	if a.Kind == KindHeartbeat {
+		h := a.Heartbeat
+		if wh := h.WorkingHours; wh != nil {
+			return fmt.Sprintf("%s  (%s within %02d-%02dh; a missed run fires late, never skipped)",
+				s, intervalLabel(h.IntervalMinutes), wh.StartHour, wh.EndHour)
+		}
+		return s + "  (measured from the last run)"
+	}
+	return fmt.Sprintf("%s  (fixed times; a run missed by more than %dm is skipped)",
+		s, int(catchUpGrace.Minutes()))
+}
+
+// windowMinutes is the working-hours span; an interval at least this long can
+// fire at most once per window, which the summary renders as an approximate time.
+func windowMinutes(wh *WorkingHours) int {
+	span := ((wh.EndHour - wh.StartHour) + 24) % 24 * 60
+	if span == 0 {
+		span = 24 * 60
+	}
+	return span
+}
+
+func intervalLabel(minutes int) string {
+	switch {
+	case minutes == 60:
+		return "hourly"
+	case minutes > 60 && minutes%60 == 0:
+		return fmt.Sprintf("every %dh", minutes/60)
+	case minutes > 60:
+		return fmt.Sprintf("every %dh%02dm", minutes/60, minutes%60)
+	default:
+		return fmt.Sprintf("every %dm", minutes)
+	}
+}
+
+func dayLabel(days []int) string {
+	d := uniqueSorted(days, 0, 6)
+	switch {
+	case len(d) == 0 || len(d) == 7:
+		return "daily"
+	case slices.Equal(d, []int{1, 2, 3, 4, 5}):
+		return "weekdays"
+	case slices.Equal(d, []int{0, 6}):
+		return "weekends"
+	}
+	names := [...]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	parts := make([]string, len(d))
+	for i, v := range d {
+		parts[i] = names[v]
+	}
+	return strings.Join(parts, ",")
+}
+
+func hoursLabel(hours []int, minute int) string {
+	hs := uniqueSorted(hours, 0, 23)
+	switch {
+	case len(hs) == 0:
+		return fmt.Sprintf("hourly at :%02d", minute)
+	case len(hs) == 1:
+		return fmt.Sprintf("%02d:%02d", hs[0], minute)
+	case hs[len(hs)-1]-hs[0] == len(hs)-1:
+		return fmt.Sprintf("hourly %02d:%02d-%02d:%02d", hs[0], minute, hs[len(hs)-1], minute)
+	}
+	parts := make([]string, len(hs))
+	for i, h := range hs {
+		parts[i] = fmt.Sprintf("%02d:%02d", h, minute)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // nextRun anchors exactly as due does, so the displayed next run is the one

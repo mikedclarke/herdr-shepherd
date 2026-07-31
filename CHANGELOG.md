@@ -30,6 +30,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   present, so installing the plugin no longer requires Go.
 - `scripts/check.sh` runs the release gate: `gofmt -l`, `go vet`, `go test -race`.
 
+### Changed
+
+- Schedules render in plain language everywhere they are shown. A heartbeat that can
+  only fire once per working-hours window reads `weekdays ~06:00` instead of
+  `every 1200m (06-16h)`; hour lists collapse to ranges (`weekdays hourly
+  08:40-16:40` instead of `days 8,9,10,11,12,13,14,15,16:40`); day sets read
+  `weekdays`, `weekends`, or `Mon,Wed,Fri`. The board's detail view also states the
+  firing semantics: heartbeats note that a missed run fires late rather than being
+  skipped, routines and scripts note the missed-run grace after which an occurrence
+  is dropped.
+
 ### Fixed
 
 - A brief `idle` no longer ends a run. Agents report `idle` between turns, so the
