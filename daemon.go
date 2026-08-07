@@ -318,6 +318,7 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 	}
 	defer release()
 
+	began := time.Now()
 	var status, detail string
 	var startFailed bool
 	switch a.Kind {
@@ -353,6 +354,7 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 	d.saveState()
 	d.appendRun(runRecord{
 		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: status, Detail: detail,
+		DurationSecs: durationSecs(began),
 	})
 	log.Printf("%s: %s (%s)", a.Name, status, detail)
 }

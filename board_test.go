@@ -220,6 +220,26 @@ func TestBoardRunScriptLocksLogsAndReleases(t *testing.T) {
 	if recs[0].Status != "completed" || recs[0].Trigger != triggerManual {
 		t.Errorf("wrong run record: %+v", recs[0])
 	}
+	if recs[0].DurationSecs <= 0 {
+		t.Errorf("a board run must record its duration, got %v", recs[0].DurationSecs)
+	}
+}
+
+func TestFmtRunDuration(t *testing.T) {
+	cases := []struct {
+		secs float64
+		want string
+	}{
+		{0.412, "0.4s"},
+		{12.6, "13s"},
+		{123, "2m03s"},
+		{3845, "1h04m"},
+	}
+	for _, c := range cases {
+		if got := fmtRunDuration(c.secs); got != c.want {
+			t.Errorf("fmtRunDuration(%v) = %q, want %q", c.secs, got, c.want)
+		}
+	}
 }
 
 func TestBoardRunRefusesWhileLockHeld(t *testing.T) {

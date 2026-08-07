@@ -267,11 +267,13 @@ func cmdRun(name string) error {
 
 	if action.Kind == KindScript {
 		fmt.Printf("Running %s in %s\n", action.Name, action.Dir())
+		began := time.Now()
 		out := &tailBuffer{max: outputTailMax}
 		runErr := runScriptOnce(action, io.MultiWriter(os.Stdout, out))
 		rec := runRecord{
 			At: time.Now(), Action: action.Name, Kind: action.Kind,
 			Status: "completed", Detail: out.String(), Trigger: triggerManual,
+			DurationSecs: durationSecs(began),
 		}
 		if runErr != nil {
 			rec.Status, rec.Detail = "error", runErr.Error()

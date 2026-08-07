@@ -169,6 +169,30 @@ func TestAppendRunLogRotatesAndCapsDetail(t *testing.T) {
 	}
 }
 
+func TestRunRecordDurationOmittedWhenZero(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	write := func(r runRecord) {
+		if err := appendRunLog(path, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(runRecord{At: time.Now(), Action: "nightly-report", Kind: KindRoutine, Status: "started"})
+	write(runRecord{At: time.Now(), Action: "nightly-report", Kind: KindRoutine, Status: "completed", DurationSecs: 92.5})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if strings.Contains(lines[0], "duration_secs") {
+		t.Errorf("a record without a duration must omit the field: %s", lines[0])
+	}
+	recs := readRunLog(t, path)
+	if len(recs) != 2 || recs[1].DurationSecs != 92.5 {
+		t.Fatalf("duration should round-trip, got %+v", recs)
+	}
+}
+
 func TestMarkInterruptedClosesDanglingRuns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runs.jsonl")
 	write := func(r runRecord) {

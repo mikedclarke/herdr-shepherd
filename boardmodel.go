@@ -603,11 +603,13 @@ func (m *boardModel) runSelected() tea.Cmd {
 	if a.Kind == KindScript {
 		m.note(fmt.Sprintf("running %s…", a.Name))
 		return func() tea.Msg {
+			began := time.Now()
 			out := &tailBuffer{max: outputTailMax}
 			runErr := runScriptOnce(a, out)
 			rec := runRecord{
 				At: time.Now(), Action: a.Name, Kind: a.Kind,
 				Status: "completed", Detail: out.String(), Trigger: triggerManual,
+				DurationSecs: durationSecs(began),
 			}
 			if runErr != nil {
 				rec.Status, rec.Detail = "error", runErr.Error()
@@ -831,13 +833,32 @@ func (m *boardModel) viewDetail() string {
 		b.WriteString(styleDim.Render("  none recorded") + "\n")
 	}
 	for _, rec := range m.history {
+		note := firstLine(rec.Detail)
+		if rec.DurationSecs > 0 {
+			note = fmtRunDuration(rec.DurationSecs) + "  " + note
+		}
 		b.WriteString(fmt.Sprintf("  %s  %s %-10s %s\n",
 			styleDim.Render(rec.At.Format("Mon 02 Jan 15:04")),
 			statusGlyph(rec.Status), rec.Status,
-			styleDim.Render(truncate(firstLine(rec.Detail), 60))))
+			styleDim.Render(truncate(note, 60))))
 	}
 	b.WriteString("\n" + styleDim.Render("e edit · E toml · r run · space pause/resume · esc back"))
 	return b.String()
+}
+
+// fmtRunDuration renders a run duration the way people say it: 0.4s, 12s,
+// 2m03s, 1h04m.
+func fmtRunDuration(secs float64) string {
+	switch {
+	case secs < 10:
+		return fmt.Sprintf("%.1fs", secs)
+	case secs < 60:
+		return fmt.Sprintf("%.0fs", secs)
+	case secs < 3600:
+		return fmt.Sprintf("%dm%02ds", int(secs)/60, int(secs)%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", int(secs)/3600, int(secs)%3600/60)
+	}
 }
 
 // truncate and pad work in terminal cells, not bytes: %-Ns and s[:n] on a name

@@ -268,6 +268,9 @@ func TestFireRecordsScriptRun(t *testing.T) {
 	if len(recs) != 1 || recs[0].Status != "completed" || recs[0].Detail != "done" {
 		t.Fatalf("expected one completed record with the script output, got %+v", recs)
 	}
+	if recs[0].DurationSecs <= 0 {
+		t.Errorf("a finished run must record its duration, got %v", recs[0].DurationSecs)
+	}
 	if runLockHeld(d.paths.StateDir, a.Name) {
 		t.Error("the run lock must be released once the run finishes")
 	}

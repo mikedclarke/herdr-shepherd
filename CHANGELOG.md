@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Run records carry the run's wall-clock duration (`duration_secs`), written on
+  the record that ends a run: scheduled scripts and agent sessions, and manual
+  script runs from the CLI or the board. Started records, interrupted markers,
+  and manual agent runs (unwatched by design) record none. The board's Recent
+  runs list shows the duration next to each run.
+
 ## [0.6.0] - 2026-07-31
 
 ### Added

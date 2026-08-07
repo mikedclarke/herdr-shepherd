@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -261,6 +262,10 @@ type runRecord struct {
 	Detail string    `json:"detail,omitempty"`
 	// Empty for a scheduled run; "manual" for one a person asked for.
 	Trigger string `json:"trigger,omitempty"`
+	// Wall-clock seconds, set on the record that ends a run. Zero when no
+	// duration is known: started records, interrupted markers, and manual
+	// agent runs (which are unwatched by design).
+	DurationSecs float64 `json:"duration_secs,omitempty"`
 }
 
 const (
@@ -268,6 +273,12 @@ const (
 	runDetailMaxLen = 512
 	triggerManual   = "manual"
 )
+
+// durationSecs reports the elapsed wall clock since start, at millisecond
+// precision so even a near-instant script records a nonzero duration.
+func durationSecs(start time.Time) float64 {
+	return math.Round(time.Since(start).Seconds()*1000) / 1000
+}
 
 // workspaceID returns the workspace a record's detail names, if any. Agent
 // records carry it so a started run can be paired with the record that ended
