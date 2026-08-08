@@ -126,6 +126,8 @@ The board is fully mouse-driven too: wheel to scroll, click a row to select it, 
 
 Creating and editing never require touching a file: the trailing `+ new action…` row (or `n`) opens the guided form, and `e` / `[ edit ]` opens the same form pre-filled. The form asks for fields by name: pick the kind and the schedule preset with `‹ ›`, fill in the rest with per-field help. It generates valid TOML, checked by the same validation the daemon uses before anything is written. New actions are written with `enabled = false`, so they start paused until you enable them; the form never overwrites another action, and renaming moves the file for you.
 
+Some fields are guided rather than typed. For `cli = "claude"` the `model` field is a `‹ ›` list of common models with a `custom…` step for any other id (nothing is rejected, so a model not on the list still works). Day-of-week is Mon–Sun chips (`←/→` to move, space to toggle), not a `0=Sun..6=Sat` list. A `next run:` line under the fields previews the next few fire times for the schedule as you type it, so you can see it is right before you save. `permission_mode = "skip"` shows in amber, since it runs unattended with no prompts.
+
 For hand-maintained TOML (comments, unusual formatting), `E` opens the raw file in `$EDITOR`, falling back to nano rather than stranding you in vi. A form save rewrites the file cleanly, so keep comment-heavy files on the `E` path.
 
 Invoked as a plugin action it opens as a zoomed herdr pane and closes back to where you were; typed in a shell it runs right there.

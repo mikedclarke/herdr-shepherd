@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -23,13 +25,39 @@ const (
 	ftInt
 	ftBool
 	ftEnum
+	ftChoice // enum of labelled choices, with an optional "custom…" free-text escape
+	ftDays   // weekday multi-select chips, stored as a CSV of 0=Sun..6=Sat
 )
+
+// choice pairs a friendly label with the value written to TOML, so the picker
+// can show "opus 4.8 (1M)" while storing the CLI's real model id.
+type choice struct{ label, value string }
+
+// claudeModelChoices are convenience presets for the model picker when cli =
+// "claude". Model ids change over time; edit this list freely. The "custom…"
+// escape always accepts any id, so the list never has to be complete, and no
+// validation rejects an id that is not here.
+var claudeModelChoices = []choice{
+	{"default", ""},
+	{"opus 4.8 (1M)", "claude-opus-4-8[1m]"},
+	{"opus 5", "claude-opus-5"},
+	{"sonnet 5", "claude-sonnet-5"},
+	{"haiku 4.5", "claude-haiku-4-5-20251001"},
+	{"fable 5", "claude-fable-5"},
+}
+
+// dayOrder lays the weekday chips out Monday-first for reading; the stored
+// values stay 0=Sun..6=Sat to match the schedule and working-hours formats.
+var dayOrder = []int{1, 2, 3, 4, 5, 6, 0}
+var dayLabels = map[int]string{0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat"}
 
 type formField struct {
 	key     string
 	label   string
 	ftype   fieldType
 	options []string // ftEnum
+	choices []choice // ftChoice
+	custom  bool     // ftChoice: offer a trailing "custom…" free-text entry
 	help    string
 }
 
@@ -38,15 +66,17 @@ type formField struct {
 const formFieldsTop = 2
 
 type formModel struct {
-	dir      string // actions dir the saved file lands in
-	editPath string // non-empty when editing an existing action's file
-	origName string // the edited action's name at load time (rename detection)
-	values   map[string]string
-	fields   []formField
-	cursor   int // 0..len(fields)-1, then len = Save, len+1 = Cancel
-	editing  bool
-	editBuf  string
-	err      string
+	dir       string // actions dir the saved file lands in
+	editPath  string // non-empty when editing an existing action's file
+	origName  string // the edited action's name at load time (rename detection)
+	values    map[string]string
+	fields    []formField
+	cursor    int // 0..len(fields)-1, then len = Save, len+1 = Cancel
+	dayCursor int // 0..6 index into dayOrder for the focused ftDays field
+	editing   bool
+	editBuf   string
+	err       string
+	infoRows  int // info lines rendered between the fields and Save (View sets it)
 }
 
 func newFormModel(actionsDir string) *formModel {
@@ -137,10 +167,16 @@ func (f *formModel) rebuild() {
 			formField{key: "timeout_minutes", label: "timeout (min)", ftype: ftInt},
 		)
 	} else {
+		// The model picker is a labelled list of known ids for claude, with a
+		// custom escape; other CLIs keep the free-text field.
+		model := formField{key: "model", label: "model", ftype: ftText, help: "optional; blank = the CLI's default"}
+		if f.values["cli"] == "claude" {
+			model = formField{key: "model", label: "model", ftype: ftChoice, choices: claudeModelChoices, custom: true, help: "‹ › to pick; cycle to custom… to type any id"}
+		}
 		fields = append(fields,
 			formField{key: "prompt", label: "prompt", ftype: ftText, help: "what the agent session should do"},
 			formField{key: "cli", label: "cli", ftype: ftEnum, options: []string{"claude", "codex"}},
-			formField{key: "model", label: "model", ftype: ftText, help: "optional; blank = the CLI's default"},
+			model,
 			formField{key: "permission_mode", label: "permissions", ftype: ftEnum, options: []string{"default", "auto", "skip"}, help: "skip = no permission prompts, unattended — use with care"},
 			formField{key: "auto_close", label: "auto close", ftype: ftBool, help: "close the workspace when the run completes"},
 			formField{key: "watch_minutes", label: "watch (min)", ftype: ftInt},
@@ -150,7 +186,7 @@ func (f *formModel) rebuild() {
 	case "heartbeat":
 		fields = append(fields,
 			formField{key: "interval_minutes", label: "every (min)", ftype: ftInt},
-			formField{key: "wh_days", label: "only on days", ftype: ftText, help: "0=Sun .. 6=Sat, comma-separated; blank = every day"},
+			formField{key: "wh_days", label: "only on days", ftype: ftDays, help: "←/→ move, space toggles; none selected = every day"},
 			formField{key: "start_hour", label: "from hour", ftype: ftText, help: "0-23; blank with 'to hour' = any time of day"},
 			formField{key: "end_hour", label: "to hour", ftype: ftText, help: "1-24; must differ from 'from hour'"},
 		)
@@ -163,7 +199,7 @@ func (f *formModel) rebuild() {
 			fields = append(fields, formField{key: "cron", label: "cron expr", ftype: ftText, help: "min hour day month weekday"})
 		case "days":
 			fields = append(fields,
-				formField{key: "days", label: "days", ftype: ftText, help: "0=Sun .. 6=Sat, comma-separated"},
+				formField{key: "days", label: "days", ftype: ftDays, help: "←/→ move, space toggles a day"},
 				formField{key: "hours", label: "at hours", ftype: ftText, help: "comma-separated, 0-23"},
 				formField{key: "minute", label: "at minute", ftype: ftInt},
 			)
@@ -205,7 +241,7 @@ func (f *formModel) update(msg tea.Msg) (bool, bool) {
 			f.move(1)
 		case tea.MouseButtonLeft:
 			row := msg.Y - formFieldsTop
-			gap := 1 // blank row between fields and Save/Cancel
+			gap := f.infoRows + 1 // info lines + the blank row before Save/Cancel
 			switch {
 			case row >= 0 && row < len(f.fields):
 				if f.editing {
@@ -246,6 +282,25 @@ func (f *formModel) press(msg tea.KeyMsg) (bool, bool) {
 			}
 		}
 		return false, false
+	}
+	// A focused weekday-chips field captures left/right (move the chip cursor)
+	// and space/enter (toggle the day); everything else navigates as usual.
+	if f.cursor < len(f.fields) && f.fields[f.cursor].ftype == ftDays {
+		switch key {
+		case "left":
+			if f.dayCursor > 0 {
+				f.dayCursor--
+			}
+			return false, false
+		case "right":
+			if f.dayCursor < len(dayOrder)-1 {
+				f.dayCursor++
+			}
+			return false, false
+		case " ", "enter":
+			f.toggleDay(f.fields[f.cursor])
+			return false, false
+		}
 	}
 	switch key {
 	case "esc", "ctrl+c":
@@ -289,8 +344,10 @@ func (f *formModel) activate() {
 	}
 	fd := f.fields[f.cursor]
 	switch fd.ftype {
-	case ftEnum, ftBool:
+	case ftEnum, ftBool, ftChoice:
 		f.cycle(1)
+	case ftDays:
+		// Selection only; toggling is space/enter, handled in press.
 	default:
 		f.err = ""
 		f.editing = true
@@ -303,6 +360,12 @@ func (f *formModel) cycle(delta int) {
 		return
 	}
 	fd := f.fields[f.cursor]
+	if fd.ftype == ftChoice {
+		f.cycleChoice(fd, delta)
+		f.err = ""
+		f.rebuild()
+		return
+	}
 	options := fd.options
 	if fd.ftype == ftBool {
 		options = []string{"false", "true"}
@@ -323,6 +386,80 @@ func (f *formModel) cycle(delta int) {
 	// about a value the form no longer holds.
 	f.err = ""
 	f.rebuild()
+}
+
+// choiceIndex maps the field's current value to its slot: a matching preset, or
+// the trailing custom slot (len(choices)) when the value is a custom id.
+func (f *formModel) choiceIndex(fd formField) int {
+	v := f.values[fd.key]
+	for i, c := range fd.choices {
+		if c.value == v {
+			return i
+		}
+	}
+	if fd.custom {
+		return len(fd.choices)
+	}
+	return 0
+}
+
+// cycleChoice walks the preset choices and, when custom is offered, a trailing
+// slot that drops into free-text entry so any id can be typed.
+func (f *formModel) cycleChoice(fd formField, delta int) {
+	total := len(fd.choices)
+	customSlot := -1
+	if fd.custom {
+		customSlot = total
+		total++
+	}
+	if total == 0 {
+		return
+	}
+	next := (f.choiceIndex(fd) + delta + total) % total
+	if next == customSlot {
+		// Land on custom: type an id, keeping any custom value already set.
+		f.editing = true
+		if f.choiceIndex(fd) == customSlot {
+			f.editBuf = f.values[fd.key]
+		} else {
+			f.editBuf = ""
+		}
+		return
+	}
+	f.values[fd.key] = fd.choices[next].value
+}
+
+// toggleDay flips the day under the chip cursor for a ftDays field, keeping the
+// stored value a sorted CSV of 0=Sun..6=Sat.
+func (f *formModel) toggleDay(fd formField) {
+	sel := parseDaySet(f.values[fd.key])
+	d := dayOrder[f.dayCursor]
+	if sel[d] {
+		delete(sel, d)
+	} else {
+		sel[d] = true
+	}
+	f.values[fd.key] = daySetCSV(sel)
+	f.err = ""
+}
+
+func parseDaySet(csv string) map[int]bool {
+	set := map[int]bool{}
+	for _, part := range strings.Split(csv, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+			set[n] = true
+		}
+	}
+	return set
+}
+
+func daySetCSV(set map[int]bool) string {
+	var days []int
+	for d := range set {
+		days = append(days, d)
+	}
+	sort.Ints(days)
+	return joinInts(days)
 }
 
 func (f *formModel) commitEdit() {
@@ -402,27 +539,9 @@ func (f *formModel) buildAction() (*Action, error) {
 			return nil, err
 		}
 	} else {
-		r := RoutineSpec{Preset: v["preset"]}
-		switch r.Preset {
-		case "cron":
-			r.Cron = v["cron"]
-		default:
-			if r.Hours, err = intCSV(v["hours"], "hours"); err != nil {
-				return nil, err
-			}
-			if r.Minute, err = intVal("minute", "minute"); err != nil {
-				return nil, err
-			}
-			if r.Preset == "days" {
-				if r.Days, err = intCSV(v["days"], "days"); err != nil {
-					return nil, err
-				}
-			}
-			if r.Preset == "monthly" {
-				if r.MonthDay, err = intVal("month_day", "day of month"); err != nil {
-					return nil, err
-				}
-			}
+		r, rerr := f.routineFromValues()
+		if rerr != nil {
+			return nil, rerr
 		}
 		a.Schedule = &r
 	}
@@ -557,6 +676,153 @@ func intListTOML(ns []int) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
+// routineFromValues assembles the [schedule] spec from the form values. It is
+// shared by buildAction (on save) and previewTimes (live), so the preview can
+// never disagree with what a save would write.
+func (f *formModel) routineFromValues() (RoutineSpec, error) {
+	v := f.values
+	r := RoutineSpec{Preset: v["preset"]}
+	if r.Preset == "cron" {
+		r.Cron = v["cron"]
+		return r, nil
+	}
+	var err error
+	if r.Hours, err = intCSV(v["hours"], "hours"); err != nil {
+		return r, err
+	}
+	if r.Minute, err = atoiField(v["minute"], "minute"); err != nil {
+		return r, err
+	}
+	if r.Preset == "days" {
+		if r.Days, err = intCSV(v["days"], "days"); err != nil {
+			return r, err
+		}
+	}
+	if r.Preset == "monthly" {
+		if r.MonthDay, err = atoiField(v["month_day"], "day of month"); err != nil {
+			return r, err
+		}
+	}
+	return r, nil
+}
+
+func atoiField(s, label string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a number", label, s)
+	}
+	return n, nil
+}
+
+// previewTimes returns the next n fire times for the schedule as currently
+// typed, best-effort: any parse error yields nil so a half-typed field shows no
+// preview rather than a wrong one. Scripts preview on their [schedule] too.
+func (f *formModel) previewTimes(now time.Time, n int) []time.Time {
+	v := f.values
+	var a Action
+	a.Kind = Kind(v["kind"])
+	switch a.Kind {
+	case KindHeartbeat:
+		iv, err := strconv.Atoi(strings.TrimSpace(v["interval_minutes"]))
+		if err != nil || iv < 1 {
+			return nil
+		}
+		a.Heartbeat.IntervalMinutes = iv
+		wh, err := f.workingHours()
+		if err != nil {
+			return nil
+		}
+		a.Heartbeat.WorkingHours = wh
+	default: // routine and script both run on [schedule]
+		r, err := f.routineFromValues()
+		if err != nil {
+			return nil
+		}
+		a.Routine = r
+		a.Kind = KindRoutine
+	}
+	out := make([]time.Time, 0, n)
+	anchor := now
+	for i := 0; i < n; i++ {
+		t, err := nextOccurrence(&a, anchor)
+		if err != nil || t.IsZero() {
+			break
+		}
+		out = append(out, t)
+		anchor = t
+	}
+	return out
+}
+
+// humanRuns renders the preview times as "today 15:00, then 16:00, 17:00":
+// each entry that shares the first entry's date collapses to just its time.
+func humanRuns(times []time.Time, now time.Time) string {
+	if len(times) == 0 {
+		return ""
+	}
+	parts := make([]string, len(times))
+	for i, t := range times {
+		if i > 0 && sameDate(t, times[0]) {
+			parts[i] = t.Format("15:04")
+		} else {
+			parts[i] = humanDay(t, now) + " " + t.Format("15:04")
+		}
+	}
+	s := parts[0]
+	if len(parts) > 1 {
+		s += ", then " + strings.Join(parts[1:], ", ")
+	}
+	return s
+}
+
+func humanDay(t, now time.Time) string {
+	switch {
+	case sameDate(t, now):
+		return "today"
+	case sameDate(t, now.AddDate(0, 0, 1)):
+		return "tomorrow"
+	case t.Before(now.AddDate(0, 0, 7)):
+		return t.Format("Mon")
+	default:
+		return t.Format("Jan 2")
+	}
+}
+
+func sameDate(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
+}
+
+// choiceLabel renders a ftChoice value: a preset shows its friendly label; a
+// custom id shows the id itself, marked so it reads as free text.
+func (f *formModel) choiceLabel(fd formField) string {
+	if idx := f.choiceIndex(fd); idx < len(fd.choices) {
+		return "‹ " + fd.choices[idx].label + " ›"
+	}
+	return "‹ " + f.values[fd.key] + " › custom"
+}
+
+// renderDays draws the weekday chips Monday-first, selected days lit and, when
+// the field is focused, the chip under the cursor highlighted.
+func (f *formModel) renderDays(fd formField, focused bool) string {
+	sel := parseDaySet(f.values[fd.key])
+	parts := make([]string, len(dayOrder))
+	for i, d := range dayOrder {
+		lbl := dayLabels[d]
+		switch {
+		case focused && i == f.dayCursor:
+			lbl = styleSelected.Render(lbl)
+		case sel[d]:
+			lbl = styleEnabled.Render(lbl)
+		default:
+			lbl = styleDim.Render(lbl)
+		}
+		parts[i] = lbl
+	}
+	return strings.Join(parts, " ")
+}
+
 func (f *formModel) View() string {
 	var b strings.Builder
 	title, note := "New action", "starts paused until enabled"
@@ -571,24 +837,62 @@ func (f *formModel) View() string {
 	}
 	help := ""
 	for i, fd := range f.fields {
-		value := f.values[fd.key]
-		if f.editing && i == f.cursor {
+		focused := i == f.cursor
+		var value string
+		switch {
+		case f.editing && focused:
 			value = f.editBuf + "▌"
-		} else if fd.ftype == ftEnum || fd.ftype == ftBool {
-			if fd.ftype == ftBool {
-				if value == "true" {
-					value = "yes"
-				} else {
-					value = "no"
-				}
+		case fd.ftype == ftBool:
+			if f.values[fd.key] == "true" {
+				value = "‹ yes ›"
+			} else {
+				value = "‹ no ›"
 			}
-			value = "‹ " + value + " ›"
+		case fd.ftype == ftEnum:
+			inner := "‹ " + f.values[fd.key] + " ›"
+			if fd.key == "permission_mode" && f.values[fd.key] == "skip" && !focused {
+				inner = styleAttn.Render(inner)
+			}
+			value = inner
+		case fd.ftype == ftChoice:
+			value = f.choiceLabel(fd)
+		case fd.ftype == ftDays:
+			value = f.renderDays(fd, focused)
+		default:
+			value = f.values[fd.key]
 		}
-		line := fmt.Sprintf("  %-14s %s", fd.label, value)
-		if i == f.cursor {
-			line = styleSelected.Render(line)
+		if focused {
 			help = fd.help
 		}
+		// Chips carry their own per-day highlight, so only the label reverses on
+		// focus; every other field reverses the whole row.
+		if fd.ftype == ftDays {
+			label := fmt.Sprintf("  %-14s ", fd.label)
+			if focused {
+				label = styleSelected.Render(label)
+			}
+			b.WriteString(label + value + "\n")
+			continue
+		}
+		line := fmt.Sprintf("  %-14s %s", fd.label, value)
+		if focused {
+			line = styleSelected.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	// Info lines sit between the fields and Save: a live next-run preview and,
+	// for skip permissions, a standing caution. update() reads infoRows to keep
+	// the mouse hit-test for Save/Cancel aligned with what was drawn.
+	now := time.Now()
+	var info []string
+	if times := f.previewTimes(now, 3); len(times) > 0 {
+		info = append(info, styleDim.Render("  next run: "+humanRuns(times, now)))
+	}
+	if f.values["kind"] != "script" && f.values["permission_mode"] == "skip" {
+		info = append(info, styleAttn.Render("  skip: no permission prompts, runs unattended"))
+	}
+	f.infoRows = len(info)
+	for _, line := range info {
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("\n")

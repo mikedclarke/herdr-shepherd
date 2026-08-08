@@ -5,10 +5,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1] - 2026-08-08
 
 ### Added
 
+- The new-action form is friendlier to fill in without knowing the TOML:
+  - **Model picker.** For `cli = "claude"` the `model` field is a `‹ ›` list of
+    common ids (opus 4.8 1M, opus 5, sonnet 5, haiku 4.5, fable 5), with a
+    `custom…` step that drops to free text so any id still works. No allowlist is
+    added: a typed id is never rejected. `codex` keeps the free-text field.
+  - **Live next-run preview.** A `next run:` line under the fields shows the next
+    three fire times for the schedule as typed (heartbeats and scripts too),
+    recomputed as you edit and blank while a field is half-typed.
+  - **Weekday chips.** The `days` and working-hours day pickers are Mon–Sun chips
+    (`←/→` to move, space to toggle) instead of a `0=Sun..6=Sat` CSV. The value on
+    disk is unchanged.
+  - **Skip caution.** `permission_mode = "skip"` shows in amber with a one-line
+    reminder that the run has no permission prompts and is unattended.
 - Run records carry the run's wall-clock duration (`duration_secs`), written on
   the record that ends a run: scheduled scripts and agent sessions, and manual
   script runs from the CLI or the board. Started records, interrupted markers,
