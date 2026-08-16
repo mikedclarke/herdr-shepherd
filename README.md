@@ -41,14 +41,10 @@ Installing registers `Shepherd: Board` and `Shepherd: Status` as plugin actions,
 
 The startup hook only fires when the herdr server starts, so after a fresh `plugin install` *or* `plugin link` the daemon is not running yet. The simplest fix is to restart the herdr server, which fires the hook.
 
-To start it by hand instead, run these from a pane **inside herdr**. The binary lives in the plugin's own directory, not on your `$PATH`, so `cd` there first:
+To start it by hand instead, run these from a pane **inside herdr**. The binary lives in the plugin's own directory, not on your `$PATH`, so `cd` there first: for a GitHub install that is herdr's clone of the plugin (below); for a `plugin link`, it is your checkout.
 
 ```bash
-# installed from GitHub: herdr keeps its clone under its own plugin directory
 cd ~/.config/herdr/plugins/github/mikedclarke.herdr-shepherd-*/
-
-# linked from a checkout: the checkout itself
-cd /path/to/herdr-shepherd
 
 ./bin/herdr-shepherd daemon --detach
 # shepherd daemon spawned (pid 41234), log: ~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd/shepherd.log
@@ -104,17 +100,21 @@ The board is a live status view of every action: schedule, last run, and next ru
 
 ![The board as a zoomed herdr pane: pausing an action, viewing run history, and the guided new-action form](docs/demo.gif)
 
-Open it by binding a key in herdr's `config.toml`:
+Open it by binding a key in herdr's config file, `~/.config/herdr/config.toml` (`herdr --help` prints the exact path). This appends the binding and applies it:
 
-```toml
+```bash
+cat >> ~/.config/herdr/config.toml <<'EOF'
+
 [[keys.command]]
 key = "prefix+a"
 type = "plugin_action"
 command = "mikedclarke.herdr-shepherd.board"
 description = "shepherd: status board"
+EOF
+herdr server reload-config
 ```
 
-(then `herdr server reload-config`), or with `herdr plugin action invoke board --plugin mikedclarke.herdr-shepherd`, or by running `herdr-shepherd board` in a terminal.
+Pick any key you like, and `herdr config check` validates the file if you edit it by hand. No keybinding is needed for a quick look: `herdr plugin action invoke board --plugin mikedclarke.herdr-shepherd`, or `herdr-shepherd board` in a terminal.
 
 | key | does |
 | --- | --- |
