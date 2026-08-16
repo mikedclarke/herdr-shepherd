@@ -39,9 +39,17 @@ Installing registers `Shepherd: Board` and `Shepherd: Status` as plugin actions,
 
 ### First run
 
-The startup hook only fires when the herdr server starts, so after a fresh `plugin install` *or* `plugin link` the daemon is not running yet. Start it once by hand (or restart the herdr server):
+The startup hook only fires when the herdr server starts, so after a fresh `plugin install` *or* `plugin link` the daemon is not running yet. The simplest fix is to restart the herdr server, which fires the hook.
+
+To start it by hand instead, run these from a pane **inside herdr**. The binary lives in the plugin's own directory, not on your `$PATH`, so `cd` there first:
 
 ```bash
+# installed from GitHub: herdr keeps its clone under its own plugin directory
+cd ~/.config/herdr/plugins/github/mikedclarke.herdr-shepherd-*/
+
+# linked from a checkout: the checkout itself
+cd /path/to/herdr-shepherd
+
 ./bin/herdr-shepherd daemon --detach
 # shepherd daemon spawned (pid 41234), log: ~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd/shepherd.log
 
@@ -50,7 +58,7 @@ The startup hook only fires when the herdr server starts, so after a fresh `plug
 # 1 action(s) configured, all disabled
 ```
 
-Run those from a pane **inside herdr**: the daemon talks to herdr over its socket and needs the `HERDR_SOCKET_PATH` that herdr injects into the panes it opens. A kernel lock keeps any two daemons from double-firing, however they were started.
+The pane inside herdr matters: the daemon talks to herdr over its socket and needs the `HERDR_SOCKET_PATH` that herdr injects into the panes it opens. A kernel lock keeps any two daemons from double-firing, however they were started.
 
 The one action in that output is the example: on its first start the daemon creates the `actions/` directory (if it doesn't exist) and seeds `example-heartbeat.toml`, a valid heartbeat with `enabled = false`. Rename it, edit it, enable it, or delete it; it is never rewritten once the directory exists.
 
@@ -263,7 +271,8 @@ herdr-shepherd version        # print the version
 ## Troubleshooting
 
 - **Daemon logs:** `shepherd.log` in the state directory, alongside `runs.jsonl` (one JSON line per run) and `state.json`. The running daemon rotates both at 5 MB, keeping one previous generation (`shepherd.log.1`, `runs.jsonl.1`); no restart is needed to keep them bounded, and the board's history view reads the rotated run log too, so rotation never blanks recent history.
-- **Is it alive?** `herdr-shepherd status`, or the `Shepherd: Status` action (via your keybinding or `herdr plugin action invoke status --plugin mikedclarke.herdr-shepherd`). "Daemon not running" with a running herdr means the startup hook hasn't fired since the plugin was installed or linked. Start it with `daemon --detach` from a herdr pane, or restart the herdr server. `SIGTERM` and `ctrl+c` stop the daemon cleanly and release its lock.
+- **Is it alive?** `herdr-shepherd status`, or the `Shepherd: Status` action (via your keybinding or `herdr plugin action invoke status --plugin mikedclarke.herdr-shepherd`). "Daemon not running" with a running herdr means the startup hook hasn't fired since the plugin was installed or linked. Start it with `daemon --detach` from a herdr pane in the plugin directory (see [First run](#first-run)), or restart the herdr server. `SIGTERM` and `ctrl+c` stop the daemon cleanly and release its lock.
+- **Board keybinding does nothing:** the board opens with or without the daemon (a stopped daemon is a status line on the board, not a dead key), so a silent key is a wiring problem, not a scheduling one. Check the `[[keys.command]]` block is really in herdr's `config.toml` and that you ran `herdr server reload-config` after adding it, and check the action is registered with `herdr plugin action list`. Then bypass the key entirely: `herdr plugin action invoke board --plugin mikedclarke.herdr-shepherd`. If that fails too, `herdr plugin log mikedclarke.herdr-shepherd` has the command's output; `no such file or directory` there means the install-time build never produced `bin/herdr-shepherd`, so run `sh scripts/build.sh` from the plugin directory.
 - **Config errors:** a TOML file that won't parse, has an unknown key, or fails validation disables only itself; every other action keeps running. It shows up as a board row carrying its error, is logged each tick, and raises **one** herdr notification per distinct error, so a broken file doesn't notify you every 30 seconds. Fix it and the error clears; break it again later and you get a fresh notification.
 - **Run statuses:** `started` is a launched agent session (manual runs stop here by design); `completed` is a clean finish; `attention` means look at the session (it needed input, exceeded its watch window, or its agent exited unexpectedly); `cancelled` means its pane was closed mid-run; `error` carries the failure detail; `interrupted` is written at daemon start for a run that was `started` when the daemon or the machine went down, so a crash mid-run leaves a record instead of a gap.
 
