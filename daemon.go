@@ -77,6 +77,10 @@ type daemon struct {
 
 	mu            sync.Mutex
 	startFailures map[string]int
+	// deferredSince holds, per action, when its current deferral spell began;
+	// an entry means a retry is pending. In-memory only: a daemon restart
+	// forgets the spell, like startFailures.
+	deferredSince map[string]time.Time
 }
 
 func runDaemon() error {
@@ -108,6 +112,7 @@ func runDaemon() error {
 		resend:         resendAfter,
 		notifiedErrors: map[string]bool{},
 		startFailures:  map[string]int{},
+		deferredSince:  map[string]time.Time{},
 	}
 	d.openLog(os.Getenv(logPathEnv))
 	defer d.closeLog()
@@ -209,13 +214,20 @@ func (d *daemon) tick() {
 		if fire, stamp := d.due(a, now); fire {
 			prev := d.state.lastRun(a.Name)
 			d.state.setLastRun(a.Name, stamp)
+			// A fresh occurrence supersedes a pending deferral retry.
+			d.clearDefer(a.Name)
 			go d.fire(a, prev)
+		} else if d.deferPending(a.Name) {
+			// A deferred script is retried every tick until it runs or its
+			// retry window closes.
+			go d.fire(a, d.state.lastRun(a.Name))
 		}
 	}
 	if len(fileErrs) == 0 {
 		// A file that failed to parse is missing from names; pruning on that
 		// tick would drop its schedule and re-fire it early once fixed.
 		d.state.prune(names)
+		d.pruneDefers(names)
 	}
 	d.state.beat(now)
 	d.saveState()
@@ -324,6 +336,22 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 	switch a.Kind {
 	case KindScript:
 		status, detail = d.runScript(a)
+		if status == "deferred" {
+			record, expired := d.noteDefer(a)
+			if expired {
+				status = "deferred-expired"
+				d.notify("Shepherd: "+a.Name+" never ran",
+					fmt.Sprintf("Kept deferring past its %dm retry window", a.DeferRetryMinutes), "none")
+			}
+			if !record {
+				// A retry is pending; only the spell's first deferral and its
+				// final outcome reach the run history.
+				log.Printf("%s: deferred, will retry (%s)", a.Name, detail)
+				return
+			}
+		} else {
+			d.clearDefer(a.Name)
+		}
 	default:
 		status, detail, startFailed = d.runAgent(a)
 	}
@@ -374,9 +402,62 @@ func (d *daemon) runScript(a *Action) (status, detail string) {
 	case errors.Is(err, errScriptTimeout):
 		d.notify("Shepherd: "+a.Name+" timed out", "", "none")
 		return "error", err.Error()
+	case isDeferExit(err):
+		// The script asked to be retried later; that is not a failure and
+		// must not raise a notification.
+		return "deferred", out.String()
 	default:
 		d.notify("Shepherd: "+a.Name+" failed", tailString(out.String(), 200), "none")
 		return "error", fmt.Sprintf("%v: %s", err, out.String())
+	}
+}
+
+// noteDefer registers a deferred script run and decides its fate. record
+// reports whether a run record should be written now: the spell's first
+// deferral and its expiry are recorded, retries in between are not. expired
+// means the retry window is spent and this deferral is final.
+func (d *daemon) noteDefer(a *Action) (record, expired bool) {
+	window := time.Duration(a.DeferRetryMinutes) * time.Minute
+	if window <= 0 {
+		return true, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.deferredSince == nil {
+		d.deferredSince = map[string]time.Time{}
+	}
+	first, seen := d.deferredSince[a.Name]
+	if !seen {
+		d.deferredSince[a.Name] = time.Now()
+		return true, false
+	}
+	if time.Since(first) < window {
+		return false, false
+	}
+	delete(d.deferredSince, a.Name)
+	return true, true
+}
+
+func (d *daemon) clearDefer(name string) {
+	d.mu.Lock()
+	delete(d.deferredSince, name)
+	d.mu.Unlock()
+}
+
+func (d *daemon) deferPending(name string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.deferredSince[name]
+	return ok
+}
+
+func (d *daemon) pruneDefers(names map[string]bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for name := range d.deferredSince {
+		if !names[name] {
+			delete(d.deferredSince, name)
+		}
 	}
 }
 

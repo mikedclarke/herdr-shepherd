@@ -208,7 +208,9 @@ preset = "cron"
 cron = "0 6 * * 1-5"            # 5-field cron: minute hour day-of-month month day-of-week
 ```
 
-Agent actions also accept `cli = "claude" | "codex"`, `model = "..."`, `enabled = false`, `auto_close = true` (close the run's workspace once the run ends), and `watch_minutes` (how long the daemon watches a session before flagging it). Treat `permission_mode = "skip"` with respect: it maps to the CLI's skip-all-permissions flag, on an unattended schedule.
+Agent actions also accept `cli = "claude" | "codex" | "pi"`, `model = "..."`, `enabled = false`, `auto_close = true` (close the run's workspace once the run ends), and `watch_minutes` (how long the daemon watches a session before flagging it). Treat `permission_mode = "skip"` with respect: it maps to the CLI's skip-all-permissions flag, on an unattended schedule. `pi` has no permission flags at all, so it only accepts `permission_mode = "default"`; its `model` value is passed as `--model` (pi treats it as a pattern or id).
+
+Scripts also accept `defer_retry_minutes`. A script that exits with code 75 (`EX_TEMPFAIL`) is saying "not now, retry later" — for example, the resource it needs is busy. Shepherd records that as `deferred` rather than `error`, raises no notification, and — when `defer_retry_minutes` is set — keeps retrying it every tick until it runs or the window closes (a final `deferred-expired` record, with a notification, since the run never happened).
 
 ### Defaults
 
@@ -223,6 +225,7 @@ Every key that has a default:
 | `auto_close` | agent actions | `false` |
 | `watch_minutes` | agent actions | `240` |
 | `timeout_minutes` | scripts | `30` |
+| `defer_retry_minutes` | scripts | `0` (an exit-75 deferral is recorded once and not retried) |
 | `interval_minutes` | heartbeats | `30` |
 | `working_hours` | heartbeats | absent (runs around the clock) |
 | `preset` | routines and scripts | `daily` |
@@ -233,7 +236,7 @@ Every key that has a default:
 
 `name`, `kind`, `directory`, and `prompt` (agents) or `command` (scripts) are required; there is nothing sensible to default them to.
 
-Validation rejects rather than clamps: a silently adjusted schedule runs at a time you never asked for. A file is disabled (and reported) if it has an unknown key, an out-of-range hour, day, minute, or `month_day`, a cron expression that can never match, `timeout_minutes` or `watch_minutes` over 1440, working hours whose `start_hour` equals its `end_hour` (drop the block instead), or a name containing whitespace, `/`, `\`, or a leading `.` (names become file names for the run locks).
+Validation rejects rather than clamps: a silently adjusted schedule runs at a time you never asked for. A file is disabled (and reported) if it has an unknown key, an out-of-range hour, day, minute, or `month_day`, a cron expression that can never match, `timeout_minutes`, `watch_minutes`, or `defer_retry_minutes` over 1440, `cli = "pi"` with a `permission_mode` other than `default` (pi has no permission flags), working hours whose `start_hour` equals its `end_hour` (drop the block instead), or a name containing whitespace, `/`, `\`, or a leading `.` (names become file names for the run locks).
 
 ### Semantics worth knowing
 
@@ -243,6 +246,7 @@ Validation rejects rather than clamps: a silently adjusted schedule runs at a ti
 - **Idle is not finished.** A freshly launched agent, and an agent between turns, both report `idle`. Shepherd re-checks before calling a run done, so a mid-run lull no longer ends the watch; only a sustained idle or an explicit `done` is terminal.
 - **Completed runs stay visible.** By default a finished session stays in the herd for review, herdr's normal workflow. Set `auto_close = true` to close its workspace when the run reaches a terminal state instead, including a run that was blocked at some point and then finished. A session that is still blocked when its watch window expires is left open either way.
 - **Blocked notifies once.** A `blocked` session raises one notification per run and keeps being watched; it does not re-notify every time the agent goes back to waiting.
+- **Exit 75 is a deferral, not a failure.** A script that exits 75 is recorded `deferred` with no notification. With `defer_retry_minutes` set, the daemon retries it every tick; only the spell's first deferral and its final outcome (a real run, or `deferred-expired` when the window closes) reach the run history, so retries don't flood it. The retry window is in memory: a daemon restart forgets a pending retry, and a fresh scheduled occurrence supersedes one.
 - **Manual runs are yours.** `herdr-shepherd run <name>` and the board's `r` bypass the schedule entirely: no watcher, no auto-close, no effect on the next scheduled run. A manual agent run opens the workspace, submits the command, and hands the session to you; history gets one `started` record, because nothing is watching for the end. A manual script run is synchronous: it streams output to your terminal, obeys the action's `timeout_minutes`, and exits with the command's own status. Either way the run is recorded with `trigger: "manual"`.
 - **Agent commands are typed into a shell.** Shepherd submits the agent invocation as a POSIX-quoted command line into the run's pane, so that pane's shell must be sh-compatible (bash, zsh, dash, ksh). A fish or nu login shell will mangle the quoting.
 - **DST:** on fall-back days the repeated hour runs once, not twice. On spring-forward days a job scheduled inside the skipped hour does not run that day; the local time simply never occurs.
@@ -274,7 +278,7 @@ herdr-shepherd version        # print the version
 - **Is it alive?** `herdr-shepherd status`, or the `Shepherd: Status` action (via your keybinding or `herdr plugin action invoke status --plugin mikedclarke.herdr-shepherd`). "Daemon not running" with a running herdr means the startup hook hasn't fired since the plugin was installed or linked. Start it with `daemon --detach` from a herdr pane in the plugin directory (see [First run](#first-run)), or restart the herdr server. `SIGTERM` and `ctrl+c` stop the daemon cleanly and release its lock.
 - **Board keybinding does nothing:** the board opens with or without the daemon (a stopped daemon is a status line on the board, not a dead key), so a silent key is a wiring problem, not a scheduling one. Check the `[[keys.command]]` block is really in herdr's `config.toml` and that you ran `herdr server reload-config` after adding it, and check the action is registered with `herdr plugin action list`. Then bypass the key entirely: `herdr plugin action invoke board --plugin mikedclarke.herdr-shepherd`. If that fails too, `herdr plugin log mikedclarke.herdr-shepherd` has the command's output; `no such file or directory` there means the install-time build never produced `bin/herdr-shepherd`, so run `sh scripts/build.sh` from the plugin directory.
 - **Config errors:** a TOML file that won't parse, has an unknown key, or fails validation disables only itself; every other action keeps running. It shows up as a board row carrying its error, is logged each tick, and raises **one** herdr notification per distinct error, so a broken file doesn't notify you every 30 seconds. Fix it and the error clears; break it again later and you get a fresh notification.
-- **Run statuses:** `started` is a launched agent session (manual runs stop here by design); `completed` is a clean finish; `attention` means look at the session (it needed input, exceeded its watch window, or its agent exited unexpectedly); `cancelled` means its pane was closed mid-run; `error` carries the failure detail; `interrupted` is written at daemon start for a run that was `started` when the daemon or the machine went down, so a crash mid-run leaves a record instead of a gap.
+- **Run statuses:** `started` is a launched agent session (manual runs stop here by design); `completed` is a clean finish; `attention` means look at the session (it needed input, exceeded its watch window, or its agent exited unexpectedly); `cancelled` means its pane was closed mid-run; `error` carries the failure detail; `deferred` is a script that exited 75 ("retry later" — not a failure, no notification); `deferred-expired` is a deferred script whose retry window closed without a successful run; `interrupted` is written at daemon start for a run that was `started` when the daemon or the machine went down, so a crash mid-run leaves a record instead of a gap.
 
 ## Contributing
 

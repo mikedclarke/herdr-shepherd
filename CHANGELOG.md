@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-08-18
+
+### Added
+
+- **`pi` is a supported agent CLI** for heartbeat and routine actions, alongside
+  `claude` and `codex`. The prompt is passed as a bare argument, which opens an
+  interactive pi session in the run's workspace (never `-p`, pi's headless print
+  mode), and `model` maps to pi's `--model`. pi has no permission flags, so
+  `permission_mode` must stay `default` — `auto`/`skip` are rejected with a clear
+  error rather than silently dropped, and the form pins the field. herdr detects
+  pi panes natively, so blocked-detection and the watch window work as they do
+  for the other CLIs.
+- **Exit 75 is a first-class deferral for scripts.** A script exiting 75
+  (`EX_TEMPFAIL`, "not now, retry later") records `deferred` instead of `error`
+  and raises no notification. A new `defer_retry_minutes` key (default 0 = no
+  retries) makes the daemon retry the script every tick until it runs or the
+  window closes; the window closing records `deferred-expired` and notifies,
+  since the run never happened. Only the first deferral and the final outcome
+  reach the run history. The board shows the new statuses (`…` / `!`) and the
+  detail view shows the retry window.
+
 ## [0.6.1] - 2026-08-08
 
 ### Added

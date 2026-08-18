@@ -16,6 +16,16 @@ import (
 // a script that failed on its own.
 var errScriptTimeout = errors.New("timed out")
 
+// deferExitCode is EX_TEMPFAIL: the script is saying "not now, retry later"
+// (e.g. a model slot is busy), which is a deferral, not a failure.
+const deferExitCode = 75
+
+// isDeferExit reports whether the script exited with the deferral code.
+func isDeferExit(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == deferExitCode
+}
+
 // waitDelay bounds Wait once the shell has gone: a grandchild that daemonized
 // still holds the output pipe, and Wait would otherwise block on it forever.
 const waitDelay = 5 * time.Second

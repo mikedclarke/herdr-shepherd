@@ -87,7 +87,7 @@ func newFormModel(actionsDir string) *formModel {
 			"prompt": "",
 			"cli":    "claude", "model": "", "permission_mode": "default",
 			"auto_close": "false", "watch_minutes": "240",
-			"command": "", "timeout_minutes": "30",
+			"command": "", "timeout_minutes": "30", "defer_retry_minutes": "0",
 			"interval_minutes": "30", "wh_days": "", "start_hour": "", "end_hour": "",
 			"preset": "weekdays", "hours": "9", "minute": "0",
 			"days": "1,2,3,4,5", "month_day": "1", "cron": "0 9 * * *",
@@ -117,6 +117,7 @@ func newFormModelForAction(a *Action, actionsDir string) *formModel {
 	v["watch_minutes"] = strconv.Itoa(a.WatchMinutes)
 	v["command"] = a.Command
 	v["timeout_minutes"] = strconv.Itoa(a.TimeoutMinutes)
+	v["defer_retry_minutes"] = strconv.Itoa(a.DeferRetryMinutes)
 	v["interval_minutes"] = strconv.Itoa(a.Heartbeat.IntervalMinutes)
 	if wh := a.Heartbeat.WorkingHours; wh != nil {
 		v["wh_days"] = csvInts(wh.Days)
@@ -165,6 +166,7 @@ func (f *formModel) rebuild() {
 		fields = append(fields,
 			formField{key: "command", label: "command", ftype: ftText, help: "shell command to run"},
 			formField{key: "timeout_minutes", label: "timeout (min)", ftype: ftInt},
+			formField{key: "defer_retry_minutes", label: "defer retry (min)", ftype: ftInt, help: "exit 75 = deferred; retry for this long (0 = record and stop)"},
 		)
 	} else {
 		// The model picker is a labelled list of known ids for claude, with a
@@ -173,11 +175,17 @@ func (f *formModel) rebuild() {
 		if f.values["cli"] == "claude" {
 			model = formField{key: "model", label: "model", ftype: ftChoice, choices: claudeModelChoices, custom: true, help: "‹ › to pick; cycle to custom… to type any id"}
 		}
+		// pi has no permission flags, so the field is pinned to default.
+		permissions := formField{key: "permission_mode", label: "permissions", ftype: ftEnum, options: []string{"default", "auto", "skip"}, help: "skip = no permission prompts, unattended — use with care"}
+		if f.values["cli"] == "pi" {
+			permissions = formField{key: "permission_mode", label: "permissions", ftype: ftEnum, options: []string{"default"}, help: "pi has no permission modes"}
+			f.values["permission_mode"] = "default"
+		}
 		fields = append(fields,
 			formField{key: "prompt", label: "prompt", ftype: ftText, help: "what the agent session should do"},
-			formField{key: "cli", label: "cli", ftype: ftEnum, options: []string{"claude", "codex"}},
+			formField{key: "cli", label: "cli", ftype: ftEnum, options: []string{"claude", "codex", "pi"}},
 			model,
-			formField{key: "permission_mode", label: "permissions", ftype: ftEnum, options: []string{"default", "auto", "skip"}, help: "skip = no permission prompts, unattended — use with care"},
+			permissions,
 			formField{key: "auto_close", label: "auto close", ftype: ftBool, help: "close the workspace when the run completes"},
 			formField{key: "watch_minutes", label: "watch (min)", ftype: ftInt},
 		)
@@ -521,6 +529,9 @@ func (f *formModel) buildAction() (*Action, error) {
 		if a.TimeoutMinutes, err = intVal("timeout_minutes", "timeout"); err != nil {
 			return nil, err
 		}
+		if a.DeferRetryMinutes, err = intVal("defer_retry_minutes", "defer retry"); err != nil {
+			return nil, err
+		}
 	} else {
 		a.Prompt = v["prompt"]
 		a.CLI = v["cli"]
@@ -616,6 +627,9 @@ func writeActionFile(path string, a *Action) error {
 	if a.Kind == KindScript {
 		fmt.Fprintf(&b, "command = %q\n", a.Command)
 		fmt.Fprintf(&b, "timeout_minutes = %d\n", a.TimeoutMinutes)
+		if a.DeferRetryMinutes > 0 {
+			fmt.Fprintf(&b, "defer_retry_minutes = %d\n", a.DeferRetryMinutes)
+		}
 	} else {
 		fmt.Fprintf(&b, "prompt = %q\n", a.Prompt)
 		fmt.Fprintf(&b, "cli = %q\n", a.CLI)

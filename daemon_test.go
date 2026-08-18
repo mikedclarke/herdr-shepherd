@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -273,6 +274,115 @@ func TestFireRecordsScriptRun(t *testing.T) {
 	}
 	if runLockHeld(d.paths.StateDir, a.Name) {
 		t.Error("the run lock must be released once the run finishes")
+	}
+}
+
+func TestFireRecordsDeferredScriptWithoutNotifying(t *testing.T) {
+	// Exit 75 means "retry later"; with no retry window it is recorded as
+	// deferred and, unlike an error, raises no notification.
+	d := testDaemon(t)
+	fake := d.client.(*scriptedHerdr)
+	a := scriptAction("email-triage", "echo slot busy; exit 75")
+	d.fire(a, time.Time{})
+	if got := d.state.lastStatus(a.Name); got != "deferred" {
+		t.Fatalf("got status %q", got)
+	}
+	recs := readRunLog(t, d.paths.RunLogFile())
+	if len(recs) != 1 || recs[0].Status != "deferred" || recs[0].Detail != "slot busy" {
+		t.Fatalf("expected one deferred record with the script output, got %+v", recs)
+	}
+	if _, _, notices, _ := fake.counts(); notices != 0 {
+		t.Errorf("a deferral must not notify, got %v", fake.notices)
+	}
+	if d.deferPending(a.Name) {
+		t.Error("no retry window means no pending retry")
+	}
+}
+
+func TestFireDeferredScriptRetriesInsideItsWindow(t *testing.T) {
+	// First run defers and leaves a retry pending; only that first deferral is
+	// recorded. The retry that succeeds records completed and ends the spell.
+	d := testDaemon(t)
+	dir := t.TempDir()
+	a := scriptAction("email-triage", "if [ -e ready ]; then echo ok; else exit 75; fi")
+	a.Directory = dir
+	a.DeferRetryMinutes = 30
+
+	d.fire(a, time.Time{})
+	if !d.deferPending(a.Name) {
+		t.Fatal("a deferral inside the window should leave a retry pending")
+	}
+	d.fire(a, time.Time{}) // still deferring: no new record
+	if recs := readRunLog(t, d.paths.RunLogFile()); len(recs) != 1 {
+		t.Fatalf("retries that defer again must not append history, got %+v", recs)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.fire(a, time.Time{})
+	if got := d.state.lastStatus(a.Name); got != "completed" {
+		t.Fatalf("the retry should complete, got %q", got)
+	}
+	if d.deferPending(a.Name) {
+		t.Error("a completed run must end the deferral spell")
+	}
+	recs := readRunLog(t, d.paths.RunLogFile())
+	if len(recs) != 2 || recs[0].Status != "deferred" || recs[1].Status != "completed" {
+		t.Fatalf("expected deferred then completed, got %+v", recs)
+	}
+}
+
+func TestFireDeferredScriptExpiresAfterItsWindow(t *testing.T) {
+	d := testDaemon(t)
+	fake := d.client.(*scriptedHerdr)
+	a := scriptAction("email-triage", "exit 75")
+	a.DeferRetryMinutes = 1
+	d.mu.Lock()
+	d.deferredSince = map[string]time.Time{a.Name: time.Now().Add(-2 * time.Minute)}
+	d.mu.Unlock()
+
+	d.fire(a, time.Time{})
+	if got := d.state.lastStatus(a.Name); got != "deferred-expired" {
+		t.Fatalf("a deferral past its window is final, got %q", got)
+	}
+	if d.deferPending(a.Name) {
+		t.Error("an expired deferral must clear the pending retry")
+	}
+	if _, _, notices, _ := fake.counts(); notices != 1 {
+		t.Errorf("a run that never happened should notify once, got %v", fake.notices)
+	}
+	recs := readRunLog(t, d.paths.RunLogFile())
+	if len(recs) != 1 || recs[0].Status != "deferred-expired" {
+		t.Fatalf("expected one deferred-expired record, got %+v", recs)
+	}
+}
+
+func TestTickRetriesAPendingDeferral(t *testing.T) {
+	// The schedule itself is not due (a daily hour half a day away), but a
+	// pending deferral makes the tick fire the action again.
+	d := testDaemon(t)
+	dir := d.paths.ActionsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	farHour := (time.Now().Hour() + 12) % 24
+	writeAction(t, dir, "triage.toml", fmt.Sprintf("name = \"email-triage\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"echo ok\"\ndefer_retry_minutes = 30\n[schedule]\nhours = [%d]\n", farHour))
+	d.mu.Lock()
+	d.deferredSince = map[string]time.Time{"email-triage": time.Now()}
+	d.mu.Unlock()
+	d.state.setLastRun("email-triage", time.Now().Add(-time.Hour))
+
+	d.tick()
+	deadline := time.Now().Add(5 * time.Second)
+	for d.state.lastStatus("email-triage") != "completed" {
+		if time.Now().After(deadline) {
+			t.Fatalf("the pending deferral was never retried, status %q", d.state.lastStatus("email-triage"))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if d.deferPending("email-triage") {
+		t.Error("the successful retry must clear the pending deferral")
 	}
 }
 

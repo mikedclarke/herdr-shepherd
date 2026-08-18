@@ -46,6 +46,9 @@ type Action struct {
 	WatchMinutes   int    `toml:"watch_minutes"`
 	Command        string `toml:"command"`
 	TimeoutMinutes int    `toml:"timeout_minutes"`
+	// DeferRetryMinutes is how long a script that exits 75 (deferred) keeps
+	// being retried on subsequent ticks; 0 means record the deferral and stop.
+	DeferRetryMinutes int `toml:"defer_retry_minutes"`
 
 	Heartbeat HeartbeatSpec `toml:"heartbeat"`
 	Schedule  *RoutineSpec  `toml:"schedule"`
@@ -114,17 +117,26 @@ func (a *Action) validate() error {
 		if strings.TrimSpace(a.Prompt) == "" {
 			return fmt.Errorf("%s: prompt is required", a.Name)
 		}
-		if a.CLI != "claude" && a.CLI != "codex" {
-			return fmt.Errorf("%s: cli must be claude or codex, got %q", a.Name, a.CLI)
+		if a.CLI != "claude" && a.CLI != "codex" && a.CLI != "pi" {
+			return fmt.Errorf("%s: cli must be claude, codex, or pi, got %q", a.Name, a.CLI)
 		}
 		switch a.PermissionMode {
 		case "default", "auto", "skip":
 		default:
 			return fmt.Errorf("%s: permission_mode must be default, auto, or skip, got %q", a.Name, a.PermissionMode)
 		}
+		if a.CLI == "pi" && a.PermissionMode != "default" {
+			return fmt.Errorf("%s: pi has no permission flags; permission_mode must be default, got %q", a.Name, a.PermissionMode)
+		}
+		if a.DeferRetryMinutes != 0 {
+			return fmt.Errorf("%s: defer_retry_minutes only applies to script actions", a.Name)
+		}
 	case KindScript:
 		if strings.TrimSpace(a.Command) == "" {
 			return fmt.Errorf("%s: command is required", a.Name)
+		}
+		if a.DeferRetryMinutes < 0 || a.DeferRetryMinutes > maxRunMinutes {
+			return fmt.Errorf("%s: defer_retry_minutes must be 0-%d, got %d", a.Name, maxRunMinutes, a.DeferRetryMinutes)
 		}
 	default:
 		return fmt.Errorf("%s: kind must be heartbeat, routine, or script, got %q", a.Name, a.Kind)
@@ -234,6 +246,12 @@ func (a *Action) AgentCommand() (string, error) {
 			parts = append(parts, "--ask-for-approval", "on-request", "--sandbox", "workspace-write")
 		case "skip":
 			parts = append(parts, "--dangerously-bypass-approvals-and-sandbox")
+		}
+	case "pi":
+		// A bare prompt argument opens an interactive session (pi -p is the
+		// headless print mode, which a watched pane must not use).
+		if a.PermissionMode != "default" {
+			return "", fmt.Errorf("pi has no permission flags; permission_mode must be default, got %q", a.PermissionMode)
 		}
 	default:
 		return "", fmt.Errorf("unsupported cli %q", a.CLI)

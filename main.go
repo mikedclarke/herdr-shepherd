@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-const version = "0.6.1"
+const version = "0.6.5"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>

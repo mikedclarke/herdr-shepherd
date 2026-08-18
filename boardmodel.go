@@ -316,6 +316,8 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.running, msg.name)
 		m.releaseRun(msg.name)
 		switch {
+		case isDeferExit(msg.err):
+			m.note(fmt.Sprintf("%s deferred (exit 75: retry later)", msg.name))
 		case msg.err != nil:
 			m.note(styleError.Render(fmt.Sprintf("%s failed: %v: %s", msg.name, msg.err, firstLine(msg.tail))))
 		case msg.logErr != nil:
@@ -613,6 +615,9 @@ func (m *boardModel) runSelected() tea.Cmd {
 			}
 			if runErr != nil {
 				rec.Status, rec.Detail = "error", runErr.Error()
+				if isDeferExit(runErr) {
+					rec.Status, rec.Detail = "deferred", out.String()
+				}
 			}
 			return scriptDoneMsg{
 				name: a.Name, err: runErr, tail: out.String(),
@@ -783,7 +788,9 @@ func statusGlyph(status string) string {
 		return styleError.Render("✗")
 	case "started":
 		return styleDim.Render("▸")
-	case "attention", "cancelled", "interrupted":
+	case "deferred":
+		return styleDim.Render("…")
+	case "attention", "cancelled", "interrupted", "deferred-expired":
 		return styleAttn.Render("!")
 	}
 	return status
@@ -819,6 +826,9 @@ func (m *boardModel) viewDetail() string {
 	if a.Kind == KindScript {
 		field("command", truncate(a.Command, 80))
 		field("timeout", fmt.Sprintf("%dm", a.TimeoutMinutes))
+		if a.DeferRetryMinutes > 0 {
+			field("defer retry", fmt.Sprintf("%dm (exit 75 retries until then)", a.DeferRetryMinutes))
+		}
 	} else {
 		field("cli", a.CLI)
 		field("model", a.Model)

@@ -57,6 +57,37 @@ hours = [6]
 	}
 }
 
+func TestLoadActionsAcceptsPiAndDeferRetry(t *testing.T) {
+	dir := t.TempDir()
+	writeAction(t, dir, "pulse.toml", `
+name = "pulse"
+kind = "heartbeat"
+directory = "~/local-agent"
+prompt = "anything for me to do?"
+cli = "pi"
+
+[heartbeat]
+interval_minutes = 90
+`)
+	writeAction(t, dir, "triage.toml", `
+name = "email-triage"
+kind = "script"
+directory = "~/local-agent"
+command = "./run.sh email-triage"
+defer_retry_minutes = 45
+`)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) > 0 || len(actions) != 2 {
+		t.Fatalf("err=%v fileErrs=%v actions=%d", err, fileErrs, len(actions))
+	}
+	if actions[0].CLI != "pi" || actions[0].PermissionMode != "default" {
+		t.Errorf("unexpected pi action: %+v", actions[0])
+	}
+	if actions[1].DeferRetryMinutes != 45 {
+		t.Errorf("defer_retry_minutes should load, got %d", actions[1].DeferRetryMinutes)
+	}
+}
+
 func TestLoadActionsMissingDirIsEmpty(t *testing.T) {
 	actions, fileErrs, err := LoadActions(filepath.Join(t.TempDir(), "nope"))
 	if err != nil || actions != nil || fileErrs != nil {
@@ -70,6 +101,12 @@ func TestLoadActionsRejectsInvalidPerFile(t *testing.T) {
 		"bad kind":       "name = \"a\"\nkind = \"cronjob\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n",
 		"bad cli":        "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\ncli = \"gpt\"\n",
 		"bad permission": "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\npermission_mode = \"yolo\"\n",
+		// pi has no permission flags; auto/skip must fail loudly, not be dropped.
+		"pi with auto":   "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\ncli = \"pi\"\npermission_mode = \"auto\"\n",
+		"pi with skip":   "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\ncli = \"pi\"\npermission_mode = \"skip\"\n",
+		"defer on agent": "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\ndefer_retry_minutes = 10\n",
+		"negative defer": "name = \"a\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\ndefer_retry_minutes = -1\n",
+		"long defer":     "name = \"a\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\ndefer_retry_minutes = 1441\n",
 		"no directory":   "name = \"a\"\nkind = \"heartbeat\"\nprompt = \"x\"\n",
 		"bad cron":       "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\npreset = \"cron\"\ncron = \"nope\"\n",
 		"impossible":     "name = \"a\"\nkind = \"routine\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[schedule]\npreset = \"cron\"\ncron = \"0 0 30 2 *\"\n",
@@ -150,6 +187,7 @@ func TestAgentCommandFlags(t *testing.T) {
 		{"codex", "default", "codex 'hi'"},
 		{"codex", "auto", "codex --ask-for-approval on-request --sandbox workspace-write 'hi'"},
 		{"codex", "skip", "codex --dangerously-bypass-approvals-and-sandbox 'hi'"},
+		{"pi", "default", "pi 'hi'"},
 	}
 	for _, c := range cases {
 		a := &Action{Kind: KindHeartbeat, CLI: c.cli, PermissionMode: c.mode, Prompt: "hi"}
@@ -185,6 +223,21 @@ func TestAgentCommand(t *testing.T) {
 	a = &Action{Kind: KindHeartbeat, CLI: "claude", PermissionMode: "default", Prompt: "hi"}
 	if got, _ = a.AgentCommand(); got != "claude 'hi'" {
 		t.Errorf("default mode should add no flags: %q", got)
+	}
+
+	// pi takes the prompt as a bare argument (interactive; -p would be
+	// headless) and honours --model like the others.
+	a = &Action{Kind: KindHeartbeat, CLI: "pi", PermissionMode: "default", Prompt: "check the queue", Model: "qwen3.8-27b"}
+	got, err = a.AgentCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "pi --model 'qwen3.8-27b' 'check the queue'"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	a = &Action{Kind: KindHeartbeat, CLI: "pi", PermissionMode: "skip", Prompt: "hi"}
+	if _, err := a.AgentCommand(); err == nil {
+		t.Error("pi has no permission flags; a non-default mode must be rejected, not silently ignored")
 	}
 }
 

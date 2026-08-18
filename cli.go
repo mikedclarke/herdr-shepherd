@@ -277,6 +277,11 @@ func cmdRun(name string) error {
 		}
 		if runErr != nil {
 			rec.Status, rec.Detail = "error", runErr.Error()
+			if isDeferExit(runErr) {
+				// The script asked to be retried later (exit 75); a manual run
+				// has nobody to retry it, but it is a deferral, not a failure.
+				rec.Status, rec.Detail = "deferred", out.String()
+			}
 		}
 		if lerr := appendRunLog(p.RunLogFile(), rec); lerr != nil {
 			fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
