@@ -216,15 +216,24 @@ func (d *daemon) tick() {
 			d.state.setLastRun(a.Name, stamp)
 			// A fresh occurrence supersedes a pending deferral retry.
 			d.clearDefer(a.Name)
-			go d.fire(a, prev, "")
+			// A scheduled occurrence absorbs a wake queued for the same
+			// action: the run that is about to start serves it, so the
+			// requester is not made to wait for a second full run a minute
+			// later. The wake file is still claimed under the run lock inside
+			// fire, and the schedule stamp advances as for any scheduled run.
+			trigger := ""
+			if wakePending(d.paths.StateDir, a.Name) {
+				trigger = triggerWake
+			}
+			go d.fire(a, prev, trigger, true)
 		} else if wakePending(d.paths.StateDir, a.Name) {
 			// A queued wake fires outside the schedule. It waited here while
 			// the run lock was held, so it never overlaps a run.
-			go d.fire(a, d.state.lastRun(a.Name), triggerWake)
+			go d.fire(a, d.state.lastRun(a.Name), triggerWake, false)
 		} else if d.deferPending(a.Name) {
 			// A deferred script is retried every tick until it runs or its
 			// retry window closes.
-			go d.fire(a, d.state.lastRun(a.Name), "")
+			go d.fire(a, d.state.lastRun(a.Name), "", false)
 		}
 	}
 	if len(fileErrs) == 0 {
@@ -320,7 +329,10 @@ func (d *daemon) notify(title, body, sound string) {
 
 // fire runs one occurrence of a. trigger is empty for a scheduled occurrence
 // and triggerWake for a queued wake; it reaches the run history and the pane.
-func (d *daemon) fire(a *Action, prevLast time.Time, trigger string) {
+// scheduled says the occurrence came from the schedule, which decides what
+// happens when the wake it was absorbing has already been claimed elsewhere:
+// a scheduled run still runs (as a scheduled one), a wake-only run does not.
+func (d *daemon) fire(a *Action, prevLast time.Time, trigger string, scheduled bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("%s: panic: %v\n%s", a.Name, r, debug.Stack())
@@ -342,10 +354,18 @@ func (d *daemon) fire(a *Action, prevLast time.Time, trigger string) {
 		// the race to a scheduled run stays queued for the next tick, and two
 		// ticks that both saw it cannot both run it.
 		source, cerr := consumeWake(d.paths.StateDir, a.Name)
-		if cerr != nil {
+		switch {
+		case cerr != nil && !scheduled:
 			return
+		case cerr != nil:
+			// Someone else claimed the wake first; this occurrence is due
+			// anyway, so it runs as the scheduled run it is.
+			trigger = ""
+		case scheduled:
+			log.Printf("%s: absorbed wake from %s", a.Name, source)
+		default:
+			log.Printf("%s: woken by %s", a.Name, source)
 		}
-		log.Printf("%s: woken by %s", a.Name, source)
 	}
 
 	began := time.Now()

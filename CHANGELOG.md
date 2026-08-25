@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-08-25
+
+### Changed
+
+- **A scheduled run absorbs a wake queued for the same action.** A request that
+  arrived just before an occurrence used to wait for the scheduled run to finish
+  and then buy a second full run of its own. Now the due occurrence claims the
+  wake file under its run lock, records `trigger: "wake"` and hands
+  `SHEPHERD_TRIGGER=wake` to the pane, so the session knows it is serving the
+  request, while the schedule stamp advances exactly as it would for any
+  scheduled occurrence. If the wake was already claimed elsewhere, the scheduled
+  run still runs, as a scheduled one.
+
 ## [0.7.0] - 2026-08-25
 
 ### Added

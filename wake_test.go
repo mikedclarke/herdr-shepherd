@@ -23,6 +23,20 @@ func farScript(t *testing.T, d *daemon, name, command string, extra string) {
 		name, command, extra, farHour))
 }
 
+// dueScript writes a script action whose schedule fired two minutes ago (inside
+// catchUpGrace whatever the clock reads), so the next tick finds it due.
+func dueScript(t *testing.T, d *daemon, name, command string) {
+	t.Helper()
+	dir := d.paths.ActionsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	occurrence := time.Now().Add(-2 * time.Minute)
+	writeAction(t, dir, name+".toml", fmt.Sprintf(
+		"name = %q\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = %q\n[schedule]\nhours = [%d]\nminute = %d\n",
+		name, command, occurrence.Hour(), occurrence.Minute()))
+}
+
 func waitForRuns(t *testing.T, d *daemon, want int, within time.Duration) []runRecord {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -177,6 +191,36 @@ func TestWakeFileConsumedOnce(t *testing.T) {
 	}
 	if terminal != 1 {
 		t.Fatalf("one wake must run exactly once, got %d completed records: %+v", terminal, recs)
+	}
+}
+
+func TestScheduledFireAbsorbsWake(t *testing.T) {
+	// A wake queued just before an occurrence must not buy a second full run:
+	// the scheduled run serves it, says so in the history, and consumes the
+	// ledger's wake file, while its own schedule stamp still advances.
+	d := testDaemon(t)
+	dueScript(t, d, "pulse", "echo beat")
+	before := time.Now().Add(-2 * time.Hour)
+	d.state.setLastRun("pulse", before)
+	if err := requestWake(d.paths.StateDir, "pulse", "chat"); err != nil {
+		t.Fatal(err)
+	}
+	d.tick()
+	recs := waitForRuns(t, d, 1, 5*time.Second)
+	if recs[0].Trigger != triggerWake || recs[0].Status != "completed" || recs[0].Detail != "beat" {
+		t.Fatalf("the scheduled run should be recorded as serving the wake, got %+v", recs)
+	}
+	if wakePending(d.paths.StateDir, "pulse") {
+		t.Error("the scheduled run should have consumed the wake file")
+	}
+	if got := d.state.lastRun("pulse"); !got.After(before) {
+		t.Errorf("the schedule stamp should advance as for a scheduled run, got %s", got)
+	}
+	// Nothing is left to fire: no wake-only run behind the scheduled one.
+	d.tick()
+	time.Sleep(300 * time.Millisecond)
+	if recs := readRunLog(t, d.paths.RunLogFile()); len(recs) != 1 {
+		t.Fatalf("a due action with a pending wake must fire exactly once, got %+v", recs)
 	}
 }
 
