@@ -16,14 +16,16 @@ var (
 
 // launchAgentWorkspace opens the run's workspace and submits the agent
 // command. settle covers the pane's shell coming up; a pane that gets input
-// before its prompt exists silently drops it.
-func launchAgentWorkspace(client herdrAPI, a *Action, settle time.Duration) (wsID, paneID string, err error) {
+// before its prompt exists silently drops it. trigger (schedule, wake, manual)
+// reaches the pane as SHEPHERD_TRIGGER beside SHEPHERD_ACTION.
+func launchAgentWorkspace(client herdrAPI, a *Action, settle time.Duration, trigger string) (wsID, paneID string, err error) {
 	command, err := a.AgentCommand()
 	if err != nil {
 		return "", "", err
 	}
 	wsID, paneID, err = client.workspaceCreate(a.Dir(), "Shepherd · "+a.Name, map[string]string{
-		"SHEPHERD_ACTION": a.Name,
+		"SHEPHERD_ACTION":  a.Name,
+		"SHEPHERD_TRIGGER": trigger,
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", errLaunchCreate, err)

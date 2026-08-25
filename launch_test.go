@@ -8,7 +8,7 @@ import (
 func TestLaunchAgentWorkspaceSubmitsTheCommand(t *testing.T) {
 	fake := &scriptedHerdr{}
 	a := watchedAction()
-	wsID, paneID, err := launchAgentWorkspace(fake, a, 0)
+	wsID, paneID, err := launchAgentWorkspace(fake, a, 0, triggerSchedule)
 	if err != nil || wsID != "ws1" || paneID != "p1" {
 		t.Fatalf("got %q %q %v", wsID, paneID, err)
 	}
@@ -24,7 +24,7 @@ func TestLaunchAgentWorkspaceSubmitsTheCommand(t *testing.T) {
 func TestLaunchAgentWorkspaceClosesAfterAFailedSubmit(t *testing.T) {
 	// An open workspace nobody asked for is worse than none at all.
 	fake := &scriptedHerdr{runErr: errors.New("pane busy")}
-	_, _, err := launchAgentWorkspace(fake, watchedAction(), 0)
+	_, _, err := launchAgentWorkspace(fake, watchedAction(), 0, triggerSchedule)
 	if !errors.Is(err, errLaunchSubmit) {
 		t.Fatalf("got %v", err)
 	}
@@ -35,7 +35,7 @@ func TestLaunchAgentWorkspaceClosesAfterAFailedSubmit(t *testing.T) {
 
 func TestLaunchAgentWorkspaceReportsCreateFailure(t *testing.T) {
 	fake := &scriptedHerdr{createErr: errors.New("socket down")}
-	_, _, err := launchAgentWorkspace(fake, watchedAction(), 0)
+	_, _, err := launchAgentWorkspace(fake, watchedAction(), 0, triggerSchedule)
 	if !errors.Is(err, errLaunchCreate) {
 		t.Fatalf("got %v", err)
 	}
@@ -47,7 +47,7 @@ func TestLaunchAgentWorkspaceReportsCreateFailure(t *testing.T) {
 func TestLaunchAgentWorkspaceRejectsABadCommand(t *testing.T) {
 	fake := &scriptedHerdr{}
 	a := &Action{Name: "nightly-report", Kind: KindRoutine, Directory: "/tmp", CLI: "claude"}
-	if _, _, err := launchAgentWorkspace(fake, a, 0); err == nil {
+	if _, _, err := launchAgentWorkspace(fake, a, 0, triggerSchedule); err == nil {
 		t.Fatal("an action with no prompt must not open a workspace")
 	}
 	if len(fake.commands) != 0 {

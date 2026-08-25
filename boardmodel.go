@@ -82,6 +82,7 @@ type boardModel struct {
 	statusAt    time.Time
 	running     map[string]bool   // manual runs this board started
 	locked      map[string]bool   // run locks held by anyone, refreshed each reload
+	woken       map[string]bool   // wakes queued for the daemon's next tick, refreshed each reload
 	locks       map[string]func() // release funcs for the runs above
 	form        *formModel        // non-nil while the new-action form is open
 }
@@ -200,9 +201,16 @@ func (m *boardModel) reload() {
 	m.st = readState(m.paths.StateFile())
 	m.now = time.Now()
 	m.locked = map[string]bool{}
+	m.woken = map[string]bool{}
 	for _, r := range m.rows {
-		if r.action != nil && runLockHeld(m.paths.StateDir, r.action.Name) {
+		if r.action == nil {
+			continue
+		}
+		if runLockHeld(m.paths.StateDir, r.action.Name) {
 			m.locked[r.action.Name] = true
+		}
+		if wakePending(m.paths.StateDir, r.action.Name) {
+			m.woken[r.action.Name] = true
 		}
 	}
 	if m.detail != "" {
@@ -757,6 +765,8 @@ func (m *boardModel) renderRow(r boardRow) string {
 	// started shows here too.
 	if m.running[a.Name] || m.locked[a.Name] {
 		last = "running…"
+	} else if m.woken[a.Name] {
+		last += " wake"
 	}
 	next := fmtTime(nextRun(a, m.st.lastRun(a.Name), m.now), "")
 	if !a.IsEnabled() {

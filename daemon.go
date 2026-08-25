@@ -216,11 +216,15 @@ func (d *daemon) tick() {
 			d.state.setLastRun(a.Name, stamp)
 			// A fresh occurrence supersedes a pending deferral retry.
 			d.clearDefer(a.Name)
-			go d.fire(a, prev)
+			go d.fire(a, prev, "")
+		} else if wakePending(d.paths.StateDir, a.Name) {
+			// A queued wake fires outside the schedule. It waited here while
+			// the run lock was held, so it never overlaps a run.
+			go d.fire(a, d.state.lastRun(a.Name), triggerWake)
 		} else if d.deferPending(a.Name) {
 			// A deferred script is retried every tick until it runs or its
 			// retry window closes.
-			go d.fire(a, d.state.lastRun(a.Name))
+			go d.fire(a, d.state.lastRun(a.Name), "")
 		}
 	}
 	if len(fileErrs) == 0 {
@@ -228,6 +232,7 @@ func (d *daemon) tick() {
 		// tick would drop its schedule and re-fire it early once fixed.
 		d.state.prune(names)
 		d.pruneDefers(names)
+		pruneWakes(d.paths.StateDir, names)
 	}
 	d.state.beat(now)
 	d.saveState()
@@ -313,7 +318,9 @@ func (d *daemon) notify(title, body, sound string) {
 	}
 }
 
-func (d *daemon) fire(a *Action, prevLast time.Time) {
+// fire runs one occurrence of a. trigger is empty for a scheduled occurrence
+// and triggerWake for a queued wake; it reaches the run history and the pane.
+func (d *daemon) fire(a *Action, prevLast time.Time, trigger string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("%s: panic: %v\n%s", a.Name, r, debug.Stack())
@@ -329,6 +336,17 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 		return
 	}
 	defer release()
+
+	if trigger == triggerWake {
+		// The wake file is claimed only under the lock, so a wake that lost
+		// the race to a scheduled run stays queued for the next tick, and two
+		// ticks that both saw it cannot both run it.
+		source, cerr := consumeWake(d.paths.StateDir, a.Name)
+		if cerr != nil {
+			return
+		}
+		log.Printf("%s: woken by %s", a.Name, source)
+	}
 
 	began := time.Now()
 	var status, detail string
@@ -353,7 +371,7 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 			d.clearDefer(a.Name)
 		}
 	default:
-		status, detail, startFailed = d.runAgent(a)
+		status, detail, startFailed = d.runAgent(a, trigger)
 	}
 
 	if startFailed {
@@ -364,6 +382,11 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 		if attempts < maxStartAttempts {
 			// Give the occurrence back so the next tick retries it.
 			d.state.setLastRun(a.Name, prevLast)
+			if trigger == triggerWake {
+				if werr := requestWake(d.paths.StateDir, a.Name, "retry after a failed start"); werr != nil && !errors.Is(werr, errWakeDebounced) {
+					log.Printf("%s: re-queue wake: %v", a.Name, werr)
+				}
+			}
 			log.Printf("%s: start failed (attempt %d/%d), will retry: %s", a.Name, attempts, maxStartAttempts, detail)
 			return
 		}
@@ -382,7 +405,7 @@ func (d *daemon) fire(a *Action, prevLast time.Time) {
 	d.saveState()
 	d.appendRun(runRecord{
 		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: status, Detail: detail,
-		DurationSecs: durationSecs(began),
+		Trigger: trigger, DurationSecs: durationSecs(began),
 	})
 	log.Printf("%s: %s (%s)", a.Name, status, detail)
 }
@@ -465,12 +488,16 @@ func (d *daemon) pruneDefers(names map[string]bool) {
 // follows it to completion. startFailed reports failures before the agent was
 // ever detected — those occurrences are retryable; later failures are not,
 // because the session may be doing real work.
-func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
+func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, startFailed bool) {
 	command, err := a.AgentCommand()
 	if err != nil {
 		return "error", err.Error(), false
 	}
-	wsID, paneID, err := launchAgentWorkspace(d.client, a, d.settle)
+	paneTrigger := trigger
+	if paneTrigger == "" {
+		paneTrigger = triggerSchedule
+	}
+	wsID, paneID, err := launchAgentWorkspace(d.client, a, d.settle, paneTrigger)
 	switch {
 	case err == nil:
 	case errors.Is(err, errLaunchCreate):
@@ -484,6 +511,7 @@ func (d *daemon) runAgent(a *Action) (status, detail string, startFailed bool) {
 	}
 	d.appendRun(runRecord{
 		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: "started", Detail: "workspace " + wsID,
+		Trigger: trigger,
 	})
 
 	// Phase 1: agent.wait errors with agent_not_found until herdr detects the

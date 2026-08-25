@@ -261,7 +261,7 @@ func scriptAction(name, command string) *Action {
 func TestFireRecordsScriptRun(t *testing.T) {
 	d := testDaemon(t)
 	a := scriptAction("build-sync", "echo done")
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastStatus(a.Name); got != "completed" {
 		t.Fatalf("got status %q", got)
 	}
@@ -283,7 +283,7 @@ func TestFireRecordsDeferredScriptWithoutNotifying(t *testing.T) {
 	d := testDaemon(t)
 	fake := d.client.(*scriptedHerdr)
 	a := scriptAction("email-triage", "echo slot busy; exit 75")
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastStatus(a.Name); got != "deferred" {
 		t.Fatalf("got status %q", got)
 	}
@@ -308,11 +308,11 @@ func TestFireDeferredScriptRetriesInsideItsWindow(t *testing.T) {
 	a.Directory = dir
 	a.DeferRetryMinutes = 30
 
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if !d.deferPending(a.Name) {
 		t.Fatal("a deferral inside the window should leave a retry pending")
 	}
-	d.fire(a, time.Time{}) // still deferring: no new record
+	d.fire(a, time.Time{}, "") // still deferring: no new record
 	if recs := readRunLog(t, d.paths.RunLogFile()); len(recs) != 1 {
 		t.Fatalf("retries that defer again must not append history, got %+v", recs)
 	}
@@ -320,7 +320,7 @@ func TestFireDeferredScriptRetriesInsideItsWindow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastStatus(a.Name); got != "completed" {
 		t.Fatalf("the retry should complete, got %q", got)
 	}
@@ -342,7 +342,7 @@ func TestFireDeferredScriptExpiresAfterItsWindow(t *testing.T) {
 	d.deferredSince = map[string]time.Time{a.Name: time.Now().Add(-2 * time.Minute)}
 	d.mu.Unlock()
 
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastStatus(a.Name); got != "deferred-expired" {
 		t.Fatalf("a deferral past its window is final, got %q", got)
 	}
@@ -393,7 +393,7 @@ func TestFireSkipsAnActionAlreadyRunning(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("lock setup: ok=%v err=%v", ok, err)
 	}
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastStatus(a.Name); got != "" {
 		t.Fatalf("a skipped run must not record a status, got %q", got)
 	}
@@ -401,7 +401,7 @@ func TestFireSkipsAnActionAlreadyRunning(t *testing.T) {
 		t.Fatalf("a skipped run must not append history, got %+v", recs)
 	}
 	release()
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastStatus(a.Name); got != "completed" {
 		t.Fatalf("the action should run once the lock is free, got %q", got)
 	}
@@ -412,7 +412,7 @@ func TestFireReleasesLockAfterTimeoutKill(t *testing.T) {
 	// Zero minutes is not reachable through applyDefaults; built directly it
 	// makes the timeout path immediate.
 	a := &Action{Name: "build-sync", Kind: KindScript, Directory: "/tmp", Command: "sleep 60"}
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastStatus(a.Name); got != "error" {
 		t.Fatalf("a timed-out script should record an error, got %q", got)
 	}
@@ -430,7 +430,7 @@ func TestFireGivesTheOccurrenceBackWhileStartsFail(t *testing.T) {
 
 	for attempt := 1; attempt < maxStartAttempts; attempt++ {
 		d.state.setLastRun(a.Name, stamp)
-		d.fire(a, prev)
+		d.fire(a, prev, "")
 		if got := d.state.lastRun(a.Name); !got.Equal(prev) {
 			t.Fatalf("attempt %d should hand the occurrence back, lastRun=%s", attempt, got)
 		}
@@ -439,7 +439,7 @@ func TestFireGivesTheOccurrenceBackWhileStartsFail(t *testing.T) {
 		}
 	}
 	d.state.setLastRun(a.Name, stamp)
-	d.fire(a, prev)
+	d.fire(a, prev, "")
 	if got := d.state.lastStatus(a.Name); got != "error" {
 		t.Fatalf("the last attempt should record the failure, got %q", got)
 	}
@@ -452,7 +452,7 @@ func TestFireGivesTheOccurrenceBackWhileStartsFail(t *testing.T) {
 	fake.createErr = nil
 	fake.waits = []waitStep{{state: "working"}, {state: "done"}}
 	fake.mu.Unlock()
-	d.fire(a, prev)
+	d.fire(a, prev, "")
 	d.mu.Lock()
 	attempts := d.startFailures[a.Name]
 	d.mu.Unlock()
@@ -470,7 +470,7 @@ func TestFireStampsHeartbeatCompletion(t *testing.T) {
 	a.applyDefaults()
 	started := time.Now()
 	d.state.setLastRun(a.Name, mustTime(t, "2026-07-27 06:15"))
-	d.fire(a, time.Time{})
+	d.fire(a, time.Time{}, "")
 	if got := d.state.lastRun(a.Name); got.Before(started) {
 		t.Errorf("heartbeat should be stamped with its completion, got %s", got)
 	}

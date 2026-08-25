@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -311,11 +312,50 @@ func startAgentRun(a *Action) (workspaceID string, err error) {
 	if err != nil {
 		return "", err
 	}
-	wsID, _, err := launchAgentWorkspace(client, a, shellSettle)
+	wsID, _, err := launchAgentWorkspace(client, a, shellSettle, triggerManual)
 	if err != nil {
 		return "", err
 	}
 	return wsID, nil
+}
+
+// cmdWake queues a wake for one action. It never takes the run lock and never
+// launches anything: the daemon fires the wake on its next tick, under the
+// same lock and stamping rules as a scheduled occurrence, which is exactly
+// what a manual `run` cannot offer.
+func cmdWake(name string) error {
+	p := resolvePaths()
+	actions, err := loadForCLI(p)
+	if err != nil {
+		return err
+	}
+	var action *Action
+	var names []string
+	for _, a := range actions {
+		names = append(names, a.Name)
+		if a.Name == name {
+			action = a
+		}
+	}
+	if action == nil {
+		return fmt.Errorf("no action named %q; available: %v", name, names)
+	}
+	if !action.IsEnabled() {
+		return fmt.Errorf("%s is disabled", action.Name)
+	}
+	source := "cli"
+	if u := os.Getenv("USER"); u != "" {
+		source = "cli:" + u
+	}
+	switch err := requestWake(p.StateDir, action.Name, source); {
+	case errors.Is(err, errWakeDebounced):
+		fmt.Printf("already queued: %s\n", action.Name)
+	case err != nil:
+		return err
+	default:
+		fmt.Printf("queued: %s (fires on the daemon's next tick, within %ds)\n", action.Name, int(tickInterval.Seconds()))
+	}
+	return nil
 }
 
 // recordManualStart writes the started record — the only trace a manual agent

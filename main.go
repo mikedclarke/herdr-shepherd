@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-const version = "0.6.5"
+const version = "0.7.0"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>
@@ -20,6 +20,8 @@ func usage(w *os.File) {
                  details; opens as a herdr pane when invoked without a TTY)
   list           List actions with their schedules and next runs
   run <name>     Fire an action now
+  wake <name>    Ask the daemon to fire an action on its next tick (queued
+                 behind a running run, debounced, recorded as trigger "wake")
   status         Show daemon liveness and the next scheduled run
     --notify     Also show the status as a herdr notification
   version        Print the version`)
@@ -50,6 +52,12 @@ func main() {
 			err = fmt.Errorf("run: action name required")
 		} else {
 			err = cmdRun(os.Args[2])
+		}
+	case "wake":
+		if len(os.Args) < 3 {
+			err = fmt.Errorf("wake: action name required")
+		} else {
+			err = cmdWake(os.Args[2])
 		}
 	case "status":
 		notify := len(os.Args) > 2 && os.Args[2] == "--notify"

@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-25
+
+### Added
+
+- **`herdr-shepherd wake <name>`: fire an action outside its schedule, safely.**
+  The command writes a request into the state directory and returns; the daemon
+  fires it on its next tick under the action's run lock, so a wake never overlaps
+  a running run (it waits behind it) and never launches from the CLI's own process
+  the way `run` does. Requests are debounced (a second one inside 20 seconds is
+  `already queued`), at most one is ever pending per action, a request older than
+  an hour is dropped rather than fired late, and a disabled action refuses. A
+  woken heartbeat restamps its schedule exactly like a scheduled one. Run history
+  records `trigger: "wake"` on the `started` and terminal records; the board shows
+  `wake` beside an action with a request pending.
+- **`SHEPHERD_TRIGGER` in the pane.** Agent sessions now receive `SHEPHERD_TRIGGER`
+  (`schedule`, `wake`, or `manual`) beside `SHEPHERD_ACTION`.
+
 ## [0.6.5] - 2026-08-18
 
 ### Added

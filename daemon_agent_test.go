@@ -21,6 +21,7 @@ type scriptedHerdr struct {
 	commands     []string
 	notices      []string
 	closed       []string
+	env          map[string]string
 }
 
 type waitStep struct {
@@ -34,6 +35,7 @@ func (f *scriptedHerdr) workspaceCreate(cwd, label string, env map[string]string
 	if f.createErr != nil {
 		return "", "", f.createErr
 	}
+	f.env = env
 	return "ws1", "p1", nil
 }
 
@@ -117,7 +119,7 @@ func TestRunAgentStartupIdleDoesNotComplete(t *testing.T) {
 		{state: "done"},
 	}}
 	d := agentTestDaemon(t, fake)
-	status, detail, startFailed := d.runAgent(watchedAction())
+	status, detail, startFailed := d.runAgent(watchedAction(), "")
 	if status != "completed" || startFailed {
 		t.Fatalf("got status=%q startFailed=%v detail=%q", status, startFailed, detail)
 	}
@@ -141,7 +143,7 @@ func TestRunAgentFastRunCompletesViaDoneProbe(t *testing.T) {
 		{state: "done"}, // probe
 	}}
 	d := agentTestDaemon(t, fake)
-	status, _, startFailed := d.runAgent(watchedAction())
+	status, _, startFailed := d.runAgent(watchedAction(), "")
 	if status != "completed" || startFailed {
 		t.Fatalf("got status=%q startFailed=%v", status, startFailed)
 	}
@@ -153,7 +155,7 @@ func TestRunAgentNeverWorkingReportsAttention(t *testing.T) {
 	fake := &scriptedHerdr{}
 	d := agentTestDaemon(t, fake)
 	d.startTimeout = 10 * time.Millisecond
-	status, detail, startFailed := d.runAgent(watchedAction())
+	status, detail, startFailed := d.runAgent(watchedAction(), "")
 	if status != "attention" || startFailed {
 		t.Fatalf("got status=%q startFailed=%v detail=%q", status, startFailed, detail)
 	}
@@ -168,7 +170,7 @@ func TestRunAgentBlockedNotifiesThenCompletes(t *testing.T) {
 		{state: "done"},
 	}}
 	d := agentTestDaemon(t, fake)
-	status, detail, _ := d.runAgent(watchedAction())
+	status, detail, _ := d.runAgent(watchedAction(), "")
 	if status != "attention" || detail != "completed after needing attention; workspace ws1" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
@@ -190,7 +192,7 @@ func TestRunAgentTransientIdleKeepsWatching(t *testing.T) {
 	a := watchedAction()
 	a.AutoClose = true
 	d := agentTestDaemon(t, fake)
-	status, detail, _ := d.runAgent(a)
+	status, detail, _ := d.runAgent(a, "")
 	if status != "completed" || detail != "session finished; closed; workspace ws1" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
@@ -212,7 +214,7 @@ func TestRunAgentConfirmedIdleCompletes(t *testing.T) {
 		{err: timeoutErr()}, // done-probe: not done either
 	}}
 	d := agentTestDaemon(t, fake)
-	status, detail, startFailed := d.runAgent(watchedAction())
+	status, detail, startFailed := d.runAgent(watchedAction(), "")
 	if status != "completed" || startFailed {
 		t.Fatalf("got status=%q startFailed=%v detail=%q", status, startFailed, detail)
 	}
@@ -221,7 +223,7 @@ func TestRunAgentConfirmedIdleCompletes(t *testing.T) {
 func TestRunAgentWorkspaceCreateFailureIsRetryable(t *testing.T) {
 	fake := &scriptedHerdr{createErr: errors.New("socket down")}
 	d := agentTestDaemon(t, fake)
-	status, detail, startFailed := d.runAgent(watchedAction())
+	status, detail, startFailed := d.runAgent(watchedAction(), "")
 	if status != "error" || !startFailed {
 		t.Fatalf("got status=%q startFailed=%v detail=%q", status, startFailed, detail)
 	}
@@ -232,7 +234,7 @@ func TestRunAgentSubmitFailureClosesWorkspace(t *testing.T) {
 	// person; retrying it every tick would open a workspace each time.
 	fake := &scriptedHerdr{runErr: errors.New("pane busy")}
 	d := agentTestDaemon(t, fake)
-	status, detail, startFailed := d.runAgent(watchedAction())
+	status, detail, startFailed := d.runAgent(watchedAction(), "")
 	if status != "attention" || startFailed {
 		t.Fatalf("got status=%q startFailed=%v detail=%q", status, startFailed, detail)
 	}
@@ -247,7 +249,7 @@ func TestRunAgentPaneClosedDuringStartupIsCancelled(t *testing.T) {
 		{err: paneNotFoundErr()},
 	}}
 	d := agentTestDaemon(t, fake)
-	status, detail, startFailed := d.runAgent(watchedAction())
+	status, detail, startFailed := d.runAgent(watchedAction(), "")
 	if status != "cancelled" || startFailed {
 		t.Fatalf("got status=%q startFailed=%v detail=%q", status, startFailed, detail)
 	}
@@ -260,7 +262,7 @@ func TestRunAgentResendsCommandOnce(t *testing.T) {
 	d := agentTestDaemon(t, fake)
 	d.resend = 0
 	d.startTimeout = 30 * time.Millisecond
-	if status, _, _ := d.runAgent(watchedAction()); status != "attention" {
+	if status, _, _ := d.runAgent(watchedAction(), ""); status != "attention" {
 		t.Fatalf("got status=%q", status)
 	}
 	if _, commands, _, _ := fake.counts(); commands != 2 {
@@ -276,7 +278,7 @@ func TestRunAgentUnreachablePaneKeepsWatching(t *testing.T) {
 		paneErr: errors.New("connect herdr socket"),
 	}
 	d := agentTestDaemon(t, fake)
-	status, detail, _ := d.runAgent(watchedAction())
+	status, detail, _ := d.runAgent(watchedAction(), "")
 	if status != "completed" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
@@ -288,7 +290,7 @@ func TestRunAgentClosedPaneDuringRunIsCancelled(t *testing.T) {
 		paneExistsFn: func(string) bool { return false },
 	}
 	d := agentTestDaemon(t, fake)
-	status, detail, _ := d.runAgent(watchedAction())
+	status, detail, _ := d.runAgent(watchedAction(), "")
 	if status != "cancelled" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
@@ -300,7 +302,7 @@ func TestRunAgentExitedAgentNeedsAttention(t *testing.T) {
 		paneExistsFn: func(string) bool { return true },
 	}
 	d := agentTestDaemon(t, fake)
-	status, detail, _ := d.runAgent(watchedAction())
+	status, detail, _ := d.runAgent(watchedAction(), "")
 	if status != "attention" || detail != "agent exited; workspace ws1" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
@@ -309,7 +311,7 @@ func TestRunAgentExitedAgentNeedsAttention(t *testing.T) {
 func TestRunAgentLogsStartedRecord(t *testing.T) {
 	fake := &scriptedHerdr{waits: []waitStep{{state: "working"}, {state: "done"}}}
 	d := agentTestDaemon(t, fake)
-	d.runAgent(watchedAction())
+	d.runAgent(watchedAction(), "")
 	recs := readRunLog(t, d.paths.RunLogFile())
 	if len(recs) != 1 || recs[0].Status != "started" || recs[0].Detail != "workspace ws1" {
 		t.Fatalf("expected one started record naming the workspace, got %+v", recs)

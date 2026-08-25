@@ -52,4 +52,7 @@ publishable, and `sh scripts/check.sh` must be green.
    Then restart the daemon: `kill -TERM $(cat ~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd/daemon.lock)`,
    and from a herdr pane in the plugin directory run
    `./bin/herdr-shepherd daemon --detach`. Confirm with `herdr-shepherd status`
-   and `herdr-shepherd version`.
+   (it must say `daemon running` before you touch anything else) and
+   `herdr-shepherd version`. A cheap end-to-end check of the new daemon is
+   `herdr-shepherd wake <a harmless script action>` and a `"trigger":"wake"`
+   record in `runs.jsonl` within 30 seconds.

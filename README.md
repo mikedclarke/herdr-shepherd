@@ -248,6 +248,8 @@ Validation rejects rather than clamps: a silently adjusted schedule runs at a ti
 - **Blocked notifies once.** A `blocked` session raises one notification per run and keeps being watched; it does not re-notify every time the agent goes back to waiting.
 - **Exit 75 is a deferral, not a failure.** A script that exits 75 is recorded `deferred` with no notification. With `defer_retry_minutes` set, the daemon retries it every tick; only the spell's first deferral and its final outcome (a real run, or `deferred-expired` when the window closes) reach the run history, so retries don't flood it. The retry window is in memory: a daemon restart forgets a pending retry, and a fresh scheduled occurrence supersedes one.
 - **Manual runs are yours.** `herdr-shepherd run <name>` and the board's `r` bypass the schedule entirely: no watcher, no auto-close, no effect on the next scheduled run. A manual agent run opens the workspace, submits the command, and hands the session to you; history gets one `started` record, because nothing is watching for the end. A manual script run is synchronous: it streams output to your terminal, obeys the action's `timeout_minutes`, and exits with the command's own status. Either way the run is recorded with `trigger: "manual"`.
+- **Wakes are the daemon's, not yours.** `herdr-shepherd wake <name>` queues a request in the state directory and returns; the daemon fires it on its next tick (within 30 seconds), under the same run lock and completion stamping as a scheduled occurrence. A wake behind a running run waits for it instead of overlapping; a second request inside 20 seconds is the same wake (`already queued`); a wake that sat for more than an hour, say while the daemon was down, is dropped rather than fired late. A disabled action refuses the request. A woken heartbeat counts as the heartbeat: the next one is measured from its end. The run is recorded with `trigger: "wake"`, and the board shows `wake` beside an action with a request queued. Anything that can run a command can be a producer: a chat server, a calendar alarm, a shell alias.
+- **The pane knows why it was launched.** Agent sessions get `SHEPHERD_ACTION` (the action name) and `SHEPHERD_TRIGGER` (`schedule`, `wake`, or `manual`) in their environment, so a prompt or collector can behave differently for a wake than for a scheduled run.
 - **Agent commands are typed into a shell.** Shepherd submits the agent invocation as a POSIX-quoted command line into the run's pane, so that pane's shell must be sh-compatible (bash, zsh, dash, ksh). A fish or nu login shell will mangle the quoting.
 - **DST:** on fall-back days the repeated hour runs once, not twice. On spring-forward days a job scheduled inside the skipped hour does not run that day; the local time simply never occurs.
 
@@ -258,11 +260,12 @@ herdr-shepherd daemon         # the scheduler (the manifest startup hook runs da
 herdr-shepherd board          # the live status board (pause/resume, run now, details)
 herdr-shepherd list           # actions, schedules, last/next runs
 herdr-shepherd run <name>     # fire an action now
+herdr-shepherd wake <name>    # ask the daemon to fire an action on its next tick
 herdr-shepherd status         # daemon liveness + next run (--notify for a herdr toast)
 herdr-shepherd version        # print the version
 ```
 
-`list`, `status`, `version`, `board`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`.
+`list`, `status`, `version`, `board`, `wake <name>`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`.
 
 ### Where config and state live
 
