@@ -49,8 +49,13 @@ publishable, and `sh scripts/check.sh` must be green.
    ```sh
    herdr plugin install mikedclarke/herdr-shepherd --yes
    ```
+   When the daemon runs from a checkout's `bin/herdr-shepherd`, put the new build in place as a
+   NEW file (`rm bin/herdr-shepherd && cp bin/herdr-shepherd.X.Y.Z bin/herdr-shepherd`), never
+   `cp` over the running binary in place: macOS kills a binary whose file was modified under a
+   cached code signature (exit 137 on the next `version` call, 2026-08-25).
    Then restart the daemon: `kill -TERM $(cat ~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd/daemon.lock)`,
-   and from a herdr pane in the plugin directory run
+   and from a herdr pane in the plugin directory (or any shell carrying the old daemon's
+   `HERDR_*` environment, read from the running process with `ps -wwE`) run
    `./bin/herdr-shepherd daemon --detach`. Confirm with `herdr-shepherd status`
    (it must say `daemon running` before you touch anything else) and
    `herdr-shepherd version`. A cheap end-to-end check of the new daemon is
