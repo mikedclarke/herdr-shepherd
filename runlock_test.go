@@ -4,7 +4,10 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -43,5 +46,86 @@ func TestRunLockLivesUnderTheStateDir(t *testing.T) {
 	defer release()
 	if _, err := os.Stat(filepath.Join(dir, "running", "build-sync.lock")); err != nil {
 		t.Fatalf("the lock file should live under <state>/running: %v", err)
+	}
+}
+
+func TestRunLockRecordsTheRunPid(t *testing.T) {
+	dir := t.TempDir()
+	lock, ok, err := openRunLock(dir, "build-sync")
+	if err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+	if err := lock.setPid(os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(runLockPath(dir, "build-sync"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != strconv.Itoa(os.Getpid()) {
+		t.Errorf("the lock file should carry the run pid, got %q", got)
+	}
+	if got := lock.recordedPid(); got != os.Getpid() {
+		t.Errorf("the pid should read back, got %d", got)
+	}
+	// The flock is gone with the release, as it would be with the daemon that
+	// took it; the live pid still answers for the action.
+	lock.release()
+	if !runLockHeld(dir, "build-sync") {
+		t.Error("a run whose process is still alive should report held")
+	}
+}
+
+func TestRunLockPidIsClearedAtTheEndOfARun(t *testing.T) {
+	dir := t.TempDir()
+	lock, ok, err := openRunLock(dir, "build-sync")
+	if err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+	if err := lock.setPid(os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.setPid(0); err != nil {
+		t.Fatal(err)
+	}
+	lock.release()
+	if runLockHeld(dir, "build-sync") {
+		t.Error("a finished run must leave its action free")
+	}
+}
+
+func TestRunLockHeldIgnoresADeadPid(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	lock, ok, err := openRunLock(dir, "build-sync")
+	if err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+	if err := lock.setPid(cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	lock.release()
+	if runLockHeld(dir, "build-sync") {
+		t.Error("a run whose process is gone must not keep its action locked")
+	}
+}
+
+func TestRunLockHeldIgnoresAFileWithNoPid(t *testing.T) {
+	dir := t.TempDir()
+	release, ok, err := tryRunLock(dir, "build-sync")
+	if err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+	release()
+	for _, contents := range []string{"", "   ", "not a pid", "-1"} {
+		if err := os.WriteFile(runLockPath(dir, "build-sync"), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if runLockHeld(dir, "build-sync") {
+			t.Errorf("a lock file holding %q records no pid and must not report held", contents)
+		}
 	}
 }

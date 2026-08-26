@@ -34,6 +34,13 @@ const waitDelay = 5 * time.Second
 // output to out. The command gets its own process group so a timeout kill
 // reaches grandchildren, not just the shell.
 func runScriptOnce(a *Action, out io.Writer) error {
+	return runScriptTracked(a, out, nil)
+}
+
+// runScriptTracked is runScriptOnce with the child's pid handed to started as
+// soon as there is one, for a caller that has to record which process the run
+// belongs to.
+func runScriptTracked(a *Action, out io.Writer, started func(pid int)) error {
 	cmd := exec.Command("sh", "-c", a.Command)
 	cmd.Dir = a.Dir()
 	cmd.Stdout = out
@@ -42,6 +49,9 @@ func runScriptOnce(a *Action, out io.Writer) error {
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Start(); err != nil {
 		return err
+	}
+	if started != nil {
+		started(cmd.Process.Pid)
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()

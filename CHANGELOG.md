@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-08-26
+
+### Fixed
+
+- **A run that outlives its daemon no longer runs twice.** The run lock is a
+  kernel flock, so it goes the moment the daemon holding it does: a daemon
+  killed or restarted mid-run left the action unlocked while the run itself was
+  still going, and the next daemon fired it again. The lock file now records the
+  pid of the run's own process, and an action counts as busy while either the
+  flock is held or the recorded process is alive. The pid is cleared when the
+  run ends, so a finished run never keeps its action locked, and a lock file
+  with no pid in it behaves exactly as it did before. Script actions are what
+  this covers: an agent session runs in a herdr pane rather than in a process
+  of the daemon's own, so a heartbeat or routine still relies on the flock.
+
+### Added
+
+- **A signalled shutdown waits for runs that are still going.** On SIGINT or
+  SIGTERM the daemon logs how many runs are in flight and gives them up to ten
+  minutes to finish before it returns and drops its lock, instead of walking out
+  on them straight away. A run still going at the end of the wait is named in
+  the log and left to finish; its lock file's pid is what stops the next daemon
+  from starting the same action over the top of it.
+
 ## [0.7.2] - 2026-08-26
 
 ### Added

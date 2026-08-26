@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -405,6 +406,150 @@ func TestFireSkipsAnActionAlreadyRunning(t *testing.T) {
 	if got := d.state.lastStatus(a.Name); got != "completed" {
 		t.Fatalf("the action should run once the lock is free, got %q", got)
 	}
+}
+
+func TestTickSkipsAnActionWhoseRecordedRunIsStillAlive(t *testing.T) {
+	// The daemon that started the run is gone, so its flock is gone with it;
+	// the pid the run recorded is what keeps the action from firing twice.
+	d := testDaemon(t)
+	dir := d.paths.ActionsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAction(t, dir, "orphan.toml", "name = \"orphaned\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n[schedule]\npreset = \"cron\"\ncron = \"* * * * *\"\n")
+	lock, ok, err := openRunLock(d.paths.StateDir, "orphaned")
+	if err != nil || !ok {
+		t.Fatalf("lock setup: ok=%v err=%v", ok, err)
+	}
+	if err := lock.setPid(os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	lock.release()
+
+	d.tick()
+	if got := d.state.lastRun("orphaned"); !got.IsZero() {
+		t.Errorf("an action whose run outlived its daemon must not be stamped, got %s", got)
+	}
+	if recs := readRunLog(t, d.paths.RunLogFile()); len(recs) != 0 {
+		t.Errorf("no second run should have happened, got %+v", recs)
+	}
+}
+
+// blockingScript returns an action that runs until the returned release func is
+// called, so a test can hold a run in flight for as long as it needs.
+func blockingScript(t *testing.T, name string) (*Action, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	a := scriptAction(name, "while [ ! -e go ]; do sleep 0.02; done; echo done")
+	a.Directory = dir
+	return a, func() {
+		if err := os.WriteFile(filepath.Join(dir, "go"), nil, 0o644); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func waitForRunning(t *testing.T, d *daemon, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(d.runningRuns()) != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected %d run(s) in flight, got %v", want, d.runningRuns())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestFireRecordsTheScriptChildPid(t *testing.T) {
+	d := testDaemon(t)
+	a, finish := blockingScript(t, "build-sync")
+	d.startRun(a, time.Time{}, "", true)
+	waitForRunning(t, d, 1)
+
+	deadline := time.Now().Add(5 * time.Second)
+	pid := 0
+	for pid == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the run never recorded its child pid")
+		}
+		data, err := os.ReadFile(runLockPath(d.paths.StateDir, a.Name))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+			if pid, err = strconv.Atoi(trimmed); err != nil {
+				t.Fatalf("the lock file should hold a pid, got %q", trimmed)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pid == os.Getpid() {
+		t.Error("the recorded pid should be the run's child, not the daemon")
+	}
+	if !pidAlive(pid) {
+		t.Errorf("the recorded child %d should be alive while the run is", pid)
+	}
+
+	finish()
+	waitForRunning(t, d, 0)
+	data, err := os.ReadFile(runLockPath(d.paths.StateDir, a.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "" {
+		t.Errorf("a finished run should clear its pid, got %q", got)
+	}
+}
+
+func TestShutdownWaitsForAnInFlightRun(t *testing.T) {
+	d := testDaemon(t)
+	d.shutdownWait = 10 * time.Second
+	a, finish := blockingScript(t, "build-sync")
+	d.startRun(a, time.Time{}, "", true)
+	waitForRunning(t, d, 1)
+
+	returned := make(chan struct{})
+	go func() {
+		d.waitForRuns()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+		t.Fatal("the shutdown wait returned while a run was still going")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	finish()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the shutdown wait should return once the run finishes")
+	}
+	if got := d.state.lastStatus(a.Name); got != "completed" {
+		t.Errorf("the run should have finished, status %q", got)
+	}
+}
+
+func TestShutdownWaitEndsAtItsBound(t *testing.T) {
+	// A run that outlives the bound is left running; the daemon still returns,
+	// so the next one can take its lock.
+	d := testDaemon(t)
+	d.shutdownWait = 100 * time.Millisecond
+	a, finish := blockingScript(t, "build-sync")
+	d.startRun(a, time.Time{}, "", true)
+	waitForRunning(t, d, 1)
+
+	began := time.Now()
+	d.waitForRuns()
+	if elapsed := time.Since(began); elapsed > 5*time.Second {
+		t.Errorf("the wait should end at its bound, took %s", elapsed)
+	}
+	if got := d.runningRuns(); len(got) != 1 {
+		t.Errorf("the run should have been left running, got %v", got)
+	}
+	finish()
+	waitForRunning(t, d, 0)
 }
 
 func TestFireReleasesLockAfterTimeoutKill(t *testing.T) {

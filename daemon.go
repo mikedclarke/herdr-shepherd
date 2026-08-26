@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,10 @@ const (
 	resendAfter       = 20 * time.Second
 	outputTailMax     = 4096
 	daemonLogMaxBytes = 5 << 20
+	// How long a signalled shutdown waits for runs that are still going. Ten
+	// minutes covers an ordinary run; anything longer is left to finish on its
+	// own. The daemon has no config file of its own, so this is a constant.
+	shutdownWait = 10 * time.Minute
 	// spawnDetached names the log file here so the daemon can rotate the file
 	// it is writing to.
 	logPathEnv = "HERDR_SHEPHERD_LOG"
@@ -68,6 +73,11 @@ type daemon struct {
 	settle       time.Duration
 	pause        time.Duration
 	resend       time.Duration
+	shutdownWait time.Duration
+
+	// runs tracks the fire goroutines so a signalled shutdown can wait for
+	// them; inflight names them for the log.
+	runs sync.WaitGroup
 
 	// Log rotation state; only the tick loop touches it.
 	logFile *os.File
@@ -81,6 +91,7 @@ type daemon struct {
 	// an entry means a retry is pending. In-memory only: a daemon restart
 	// forgets the spell, like startFailures.
 	deferredSince map[string]time.Time
+	inflight      map[string]int
 }
 
 func runDaemon() error {
@@ -110,6 +121,7 @@ func runDaemon() error {
 		settle:         shellSettle,
 		pause:          pollPause,
 		resend:         resendAfter,
+		shutdownWait:   shutdownWait,
 		notifiedErrors: map[string]bool{},
 		startFailures:  map[string]int{},
 		deferredSince:  map[string]time.Time{},
@@ -134,7 +146,7 @@ func runDaemon() error {
 		case <-ticker.C:
 			d.tick()
 		case <-ctx.Done():
-			log.Printf("shepherd: shutting down")
+			d.waitForRuns()
 			return nil
 		}
 	}
@@ -228,15 +240,15 @@ func (d *daemon) tick() {
 			if wakePending(d.paths.StateDir, a.Name) {
 				trigger = triggerWake
 			}
-			go d.fire(a, prev, trigger, true)
+			d.startRun(a, prev, trigger, true)
 		} else if wakePending(d.paths.StateDir, a.Name) {
 			// A queued wake fires outside the schedule. It waited here while
 			// the run lock was held, so it never overlaps a run.
-			go d.fire(a, d.state.lastRun(a.Name), triggerWake, false)
+			d.startRun(a, d.state.lastRun(a.Name), triggerWake, false)
 		} else if d.deferPending(a.Name) {
 			// A deferred script is retried every tick until it runs or its
 			// retry window closes.
-			go d.fire(a, d.state.lastRun(a.Name), "", false)
+			d.startRun(a, d.state.lastRun(a.Name), "", false)
 		}
 	}
 	if len(fileErrs) == 0 {
@@ -330,6 +342,68 @@ func (d *daemon) notify(title, body, sound string) {
 	}
 }
 
+// startRun fires an occurrence in its own goroutine and registers it, so a
+// signalled shutdown knows what is still running and can wait for it.
+func (d *daemon) startRun(a *Action, prevLast time.Time, trigger string, scheduled bool) {
+	d.runs.Add(1)
+	d.mu.Lock()
+	if d.inflight == nil {
+		d.inflight = map[string]int{}
+	}
+	d.inflight[a.Name]++
+	d.mu.Unlock()
+	go func() {
+		defer func() {
+			d.mu.Lock()
+			if d.inflight[a.Name] > 1 {
+				d.inflight[a.Name]--
+			} else {
+				delete(d.inflight, a.Name)
+			}
+			d.mu.Unlock()
+			d.runs.Done()
+		}()
+		d.fire(a, prevLast, trigger, scheduled)
+	}()
+}
+
+// runningRuns names the actions whose runs have not returned yet, sorted so
+// the shutdown log reads the same way twice.
+func (d *daemon) runningRuns() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	names := make([]string, 0, len(d.inflight))
+	for name := range d.inflight {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// waitForRuns gives runs still in progress a bounded chance to finish before
+// the daemon returns and drops its lock. A run that outlives the wait is left
+// running and named: the pid in its run lock is what keeps the next daemon
+// from firing the same action a second time.
+func (d *daemon) waitForRuns() {
+	names := d.runningRuns()
+	if len(names) == 0 || d.shutdownWait <= 0 {
+		log.Printf("shepherd: shutting down")
+		return
+	}
+	log.Printf("shepherd: shutting down, waiting for %d run(s)", len(names))
+	done := make(chan struct{})
+	go func() {
+		d.runs.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d.shutdownWait):
+		log.Printf("shepherd: still running after %s, left to finish: %s",
+			d.shutdownWait, strings.Join(d.runningRuns(), ", "))
+	}
+}
+
 // fire runs one occurrence of a. trigger is empty for a scheduled occurrence
 // and triggerWake for a queued wake; it reaches the run history and the pane.
 // scheduled says the occurrence came from the schedule, which decides what
@@ -341,7 +415,7 @@ func (d *daemon) fire(a *Action, prevLast time.Time, trigger string, scheduled b
 			log.Printf("%s: panic: %v\n%s", a.Name, r, debug.Stack())
 		}
 	}()
-	release, ok, err := tryRunLock(d.paths.StateDir, a.Name)
+	lock, ok, err := openRunLock(d.paths.StateDir, a.Name)
 	if err != nil {
 		log.Printf("%s: run lock: %v", a.Name, err)
 		return
@@ -350,7 +424,15 @@ func (d *daemon) fire(a *Action, prevLast time.Time, trigger string, scheduled b
 		log.Printf("%s: skipped, a run is already in progress", a.Name)
 		return
 	}
-	defer release()
+	defer lock.release()
+	// The pid is cleared before the lock goes, so the action is free the moment
+	// the run ends. A run that outlives its daemon never gets here, which is the
+	// point: its pid stays in the file and the next daemon sees the action busy.
+	defer func() {
+		if err := lock.setPid(0); err != nil {
+			log.Printf("%s: clear run lock pid: %v", a.Name, err)
+		}
+	}()
 
 	if trigger == triggerWake {
 		// The wake file is claimed only under the lock, so a wake that lost
@@ -376,7 +458,7 @@ func (d *daemon) fire(a *Action, prevLast time.Time, trigger string, scheduled b
 	var startFailed bool
 	switch a.Kind {
 	case KindScript:
-		status, detail = d.runScript(a)
+		status, detail = d.runScript(a, lock)
 		if status == "deferred" {
 			record, expired := d.noteDefer(a)
 			if expired {
@@ -439,9 +521,13 @@ func (d *daemon) appendRun(r runRecord) {
 	}
 }
 
-func (d *daemon) runScript(a *Action) (status, detail string) {
+func (d *daemon) runScript(a *Action, lock *runLock) (status, detail string) {
 	out := &tailBuffer{max: outputTailMax}
-	err := runScriptOnce(a, out)
+	err := runScriptTracked(a, out, func(pid int) {
+		if perr := lock.setPid(pid); perr != nil {
+			log.Printf("%s: record run lock pid: %v", a.Name, perr)
+		}
+	})
 	switch {
 	case err == nil:
 		return "completed", out.String()
