@@ -206,7 +206,7 @@ func (m *boardModel) reload() {
 		if r.action == nil {
 			continue
 		}
-		if runLockHeld(m.paths.StateDir, r.action.Name) {
+		if runLockHeld(m.paths.StateDir, r.action.Name, runPidMaxAge(r.action)) {
 			m.locked[r.action.Name] = true
 		}
 		if wakePending(m.paths.StateDir, r.action.Name) {

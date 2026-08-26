@@ -273,7 +273,7 @@ func TestFireRecordsScriptRun(t *testing.T) {
 	if recs[0].DurationSecs <= 0 {
 		t.Errorf("a finished run must record its duration, got %v", recs[0].DurationSecs)
 	}
-	if runLockHeld(d.paths.StateDir, a.Name) {
+	if runLockHeld(d.paths.StateDir, a.Name, time.Hour) {
 		t.Error("the run lock must be released once the run finishes")
 	}
 }
@@ -561,7 +561,7 @@ func TestFireReleasesLockAfterTimeoutKill(t *testing.T) {
 	if got := d.state.lastStatus(a.Name); got != "error" {
 		t.Fatalf("a timed-out script should record an error, got %q", got)
 	}
-	if runLockHeld(d.paths.StateDir, a.Name) {
+	if runLockHeld(d.paths.StateDir, a.Name, time.Hour) {
 		t.Error("the run lock must be released after a timeout kill")
 	}
 }
@@ -703,4 +703,27 @@ func TestAcquireLockExcludesSecondHolder(t *testing.T) {
 		t.Fatalf("lock should be reacquirable after release: %v", err)
 	}
 	release2()
+}
+
+func TestShutdownReleasesTheDaemonLockBeforeWaiting(t *testing.T) {
+	// The daemon that replaces this one must be able to start while the runs
+	// still going are waited for, so the lock goes before the wait.
+	d := testDaemon(t)
+	d.shutdownWait = 100 * time.Millisecond
+	a, finish := blockingScript(t, "build-sync")
+	d.startRun(a, time.Time{}, "", true)
+	waitForRunning(t, d, 1)
+
+	var order []string
+	stop := func() { order = append(order, "stop") }
+	release := func() { order = append(order, "release") }
+	d.shutdown(stop, release)
+	if got := strings.Join(order, ","); got != "stop,release" {
+		t.Errorf("shutdown should stop the signal handler, then release the lock, then wait: got %q", got)
+	}
+	if got := d.runningRuns(); len(got) != 1 {
+		t.Errorf("the run should still be going after the bounded wait, got %v", got)
+	}
+	finish()
+	waitForRunning(t, d, 0)
 }

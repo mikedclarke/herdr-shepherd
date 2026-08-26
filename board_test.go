@@ -196,7 +196,7 @@ func TestBoardRunScriptLocksLogsAndReleases(t *testing.T) {
 	if !m.running["sync-files"] {
 		t.Error("run did not mark the action as running")
 	}
-	if !runLockHeld(p.StateDir, "sync-files") {
+	if !runLockHeld(p.StateDir, "sync-files", time.Hour) {
 		t.Error("run lock not held while the script runs")
 	}
 	msg, ok := cmd().(scriptDoneMsg)
@@ -210,7 +210,7 @@ func TestBoardRunScriptLocksLogsAndReleases(t *testing.T) {
 	if m.running["sync-files"] {
 		t.Error("running flag survived completion")
 	}
-	if runLockHeld(p.StateDir, "sync-files") {
+	if runLockHeld(p.StateDir, "sync-files", time.Hour) {
 		t.Error("run lock not released after completion")
 	}
 	recs := actionHistory(p.RunLogFile(), "sync-files", 4)
@@ -277,7 +277,7 @@ func TestBoardAgentStartedReleasesTheLaunchLock(t *testing.T) {
 	if m.running["nightly-report"] {
 		t.Error("running flag survived the launch")
 	}
-	if runLockHeld(p.StateDir, "nightly-report") {
+	if runLockHeld(p.StateDir, "nightly-report", time.Hour) {
 		t.Error("launch lock not released once the workspace was up")
 	}
 	if !strings.Contains(m.status, "ws-1") {

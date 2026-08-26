@@ -107,7 +107,9 @@ func runDaemon() error {
 	if err != nil {
 		return err
 	}
-	defer release()
+	var releaseOnce sync.Once
+	releaseLock := func() { releaseOnce.Do(release) }
+	defer releaseLock()
 	seedExamples(p.ActionsDir())
 	if err := markInterrupted(p.RunLogFile()); err != nil {
 		log.Printf("interrupted-run scan: %v", err)
@@ -146,7 +148,7 @@ func runDaemon() error {
 		case <-ticker.C:
 			d.tick()
 		case <-ctx.Done():
-			d.waitForRuns()
+			d.shutdown(stop, releaseLock)
 			return nil
 		}
 	}
@@ -223,7 +225,7 @@ func (d *daemon) tick() {
 	names := map[string]bool{}
 	for _, a := range actions {
 		names[a.Name] = true
-		if !a.IsEnabled() || runLockHeld(d.paths.StateDir, a.Name) {
+		if !a.IsEnabled() || runLockHeld(d.paths.StateDir, a.Name, runPidMaxAge(a)) {
 			continue
 		}
 		if fire, stamp := d.due(a, now); fire {
@@ -342,6 +344,13 @@ func (d *daemon) notify(title, body, sound string) {
 	}
 }
 
+// runPidMaxAge is how long a run lock's recorded pid is believed for an
+// action: its timeout plus the grace the kill gets, after which the run is
+// gone whatever the file says.
+func runPidMaxAge(a *Action) time.Duration {
+	return time.Duration(a.TimeoutMinutes)*time.Minute + 5*time.Minute
+}
+
 // startRun fires an occurrence in its own goroutine and registers it, so a
 // signalled shutdown knows what is still running and can wait for it.
 func (d *daemon) startRun(a *Action, prevLast time.Time, trigger string, scheduled bool) {
@@ -378,6 +387,22 @@ func (d *daemon) runningRuns() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// shutdown is the signalled exit, in the order that matters: the signal
+// handler comes off first, so a second signal ends the process outright
+// instead of being swallowed while runs are waited for; the daemon lock goes
+// next, so the daemon that replaces this one can start at once; and only
+// then are the runs still going given their chance to finish. The run lock's
+// recorded pid is what keeps the new daemon off those runs in the meantime.
+func (d *daemon) shutdown(stop, releaseLock func()) {
+	if stop != nil {
+		stop()
+	}
+	if releaseLock != nil {
+		releaseLock()
+	}
+	d.waitForRuns()
 }
 
 // waitForRuns gives runs still in progress a bounded chance to finish before

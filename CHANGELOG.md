@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-08-26
+
+### Fixed
+
+- **The shutdown wait no longer blocks the daemon that replaces this one.** In
+  0.7.3 a signalled daemon kept its own lock file while it waited for runs
+  still going, so the documented restart (stop, then start the new build)
+  failed with "daemon already running" for up to ten minutes, and a second
+  signal was swallowed for the same wait. The signal handler now comes off
+  first, the daemon lock is released next, and only then are the runs given
+  their chance to finish; a second signal ends the process at once.
+- **A pid left in a run lock file by a daemon killed outright can no longer
+  lock its action for ever.** The recorded pid is believed only while the file
+  is younger than the action's timeout plus five minutes; after that the number
+  belongs to whatever process was handed it, and the action runs again.
+- **The pid record is written whole.** A reader that lands mid-write sees the
+  old pid or the new one, never an empty file.
+
 ## [0.7.3] - 2026-08-26
 
 ### Fixed

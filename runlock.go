@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Run locks are per-action flocks under <StateDir>/running. They coordinate
@@ -68,17 +69,16 @@ func (l *runLock) release() {
 // writes: a finished run must not keep its action locked once its number is
 // handed to some unrelated process.
 func (l *runLock) setPid(pid int) error {
-	if err := l.f.Truncate(0); err != nil {
+	// Write first, then cut the file to the new length: a reader that lands
+	// between the two sees the old pid or the new one, never an empty file.
+	text := ""
+	if pid > 0 {
+		text = strconv.Itoa(pid)
+	}
+	if _, err := l.f.WriteAt([]byte(text), 0); err != nil {
 		return err
 	}
-	if _, err := l.f.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	if pid <= 0 {
-		return nil
-	}
-	_, err := l.f.WriteString(strconv.Itoa(pid))
-	return err
+	return l.f.Truncate(int64(len(text)))
 }
 
 // recordedPid reads the pid the lock file carries. An empty file, or one that
@@ -113,7 +113,12 @@ func pidAlive(pid int) bool {
 // the pid of a run that outlived the daemon which started it. A state dir that
 // cannot be locked at all reports not-held: refusing every run is worse than
 // allowing one the daemon may also be starting.
-func runLockHeld(stateDir, name string) bool {
+//
+// maxAge bounds how long a recorded pid is believed: a run cannot outlive its
+// action's timeout, so a lock file older than that holds a number that has
+// been handed to some other process (a daemon killed outright never clears
+// it), and believing it would keep the action from ever running again.
+func runLockHeld(stateDir, name string, maxAge time.Duration) bool {
 	lock, ok, err := openRunLock(stateDir, name)
 	if err != nil {
 		return false
@@ -122,6 +127,10 @@ func runLockHeld(stateDir, name string) bool {
 		return true
 	}
 	pid := lock.recordedPid()
+	stale := false
+	if info, err := lock.f.Stat(); err == nil && maxAge > 0 {
+		stale = time.Since(info.ModTime()) > maxAge
+	}
 	lock.release()
-	return pidAlive(pid)
+	return !stale && pidAlive(pid)
 }
