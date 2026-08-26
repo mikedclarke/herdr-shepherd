@@ -322,8 +322,9 @@ func startAgentRun(a *Action) (workspaceID string, err error) {
 // cmdWake queues a wake for one action. It never takes the run lock and never
 // launches anything: the daemon fires the wake on its next tick, under the
 // same lock and stamping rules as a scheduled occurrence, which is exactly
-// what a manual `run` cannot offer.
-func cmdWake(name string) error {
+// what a manual `run` cannot offer. With an instant it schedules the wake
+// instead: the daemon promotes it on the first tick at or after that instant.
+func cmdWake(name string, at time.Time) error {
 	p := resolvePaths()
 	actions, err := loadForCLI(p)
 	if err != nil {
@@ -346,6 +347,21 @@ func cmdWake(name string) error {
 	source := "cli"
 	if u := os.Getenv("USER"); u != "" {
 		source = "cli:" + u
+	}
+	// An instant already past by less than the wake's own lifetime is not worth
+	// scheduling: the next tick would promote it anyway, so ask for the wake now.
+	if !at.IsZero() && !at.After(time.Now()) && time.Since(at) <= wakeMaxAge {
+		at = time.Time{}
+	}
+	if !at.IsZero() {
+		switch err := scheduleWake(p.StateDir, action.Name, at, source); {
+		case errors.Is(err, errWakeInPast):
+			return fmt.Errorf("--at is %d min in the past", int(time.Since(at).Minutes()))
+		case err != nil:
+			return err
+		}
+		fmt.Printf("scheduled: %s at %s (fires on the first tick at or after it)\n", action.Name, at.Format(time.RFC3339))
+		return nil
 	}
 	switch err := requestWake(p.StateDir, action.Name, source); {
 	case errors.Is(err, errWakeDebounced):

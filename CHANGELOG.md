@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-08-26
+
+### Added
+
+- **`herdr-shepherd wake <name> --at <when>`: ask for a wake at an instant, not
+  just on the next tick.** The instant is RFC3339 or `YYYY-MM-DD HH:MM[:SS]` read
+  as local time, and the request is a file beside the ordinary wake; the daemon
+  promotes it to a normal wake on the first tick at or after the instant, which
+  then fires under the same run lock, debounce and `trigger: "wake"` stamping as
+  any other wake. This is for a producer that already knows when it will want a
+  run, such as a calendar alarm asking for a session 25 minutes before a call.
+  At most one schedule per action: the latest one replaces the last, so a plan
+  that moves is one more request. A schedule left more than an hour behind its
+  instant, say because the daemon was down, is dropped rather than fired late; an
+  instant already past by less than that is simply queued now. A disabled or
+  unknown action refuses as it always did, and a schedule for a deleted action is
+  pruned with its wake file.
+
 ## [0.7.1] - 2026-08-25
 
 ### Changed

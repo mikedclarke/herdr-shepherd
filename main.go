@@ -2,13 +2,16 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
-const version = "0.7.1"
+const version = "0.7.2"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>
@@ -22,6 +25,9 @@ func usage(w *os.File) {
   run <name>     Fire an action now
   wake <name>    Ask the daemon to fire an action on its next tick (queued
                  behind a running run, debounced, recorded as trigger "wake")
+    --at <when>  Fire it at an instant instead of now: RFC3339 or
+                 "YYYY-MM-DD HH:MM[:SS]" in local time. The daemon fires it on
+                 the first tick at or after the instant
   status         Show daemon liveness and the next scheduled run
     --notify     Also show the status as a herdr notification
   version        Print the version`)
@@ -56,8 +62,10 @@ func main() {
 	case "wake":
 		if len(os.Args) < 3 {
 			err = fmt.Errorf("wake: action name required")
+		} else if at, perr := parseWakeAt(os.Args[3:]); perr != nil {
+			err = perr
 		} else {
-			err = cmdWake(os.Args[2])
+			err = cmdWake(os.Args[2], at)
 		}
 	case "status":
 		notify := len(os.Args) > 2 && os.Args[2] == "--notify"
@@ -79,6 +87,27 @@ func main() {
 		fmt.Fprintln(os.Stderr, "herdr-shepherd:", err)
 		os.Exit(1)
 	}
+}
+
+// parseWakeAt reads the wake command's flags off the tail of the argument list.
+// --at takes RFC3339 or "YYYY-MM-DD HH:MM[:SS]" read as local time; the zero
+// instant means now, the only wake there was before 0.7.2.
+func parseWakeAt(args []string) (time.Time, error) {
+	fs := flag.NewFlagSet("wake", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	at := fs.String("at", "", "fire the action at this instant instead of on the next tick")
+	if err := fs.Parse(args); err != nil {
+		return time.Time{}, fmt.Errorf("wake: %w", err)
+	}
+	if *at == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04"} {
+		if t, perr := time.ParseInLocation(layout, *at, time.Local); perr == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("wake: --at %q is not an instant; use RFC3339 or \"YYYY-MM-DD HH:MM[:SS]\"", *at)
 }
 
 // spawnDetached starts the scheduler in its own session and returns, so the

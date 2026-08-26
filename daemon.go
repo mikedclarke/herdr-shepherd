@@ -196,6 +196,9 @@ func (d *daemon) tick() {
 	}()
 	d.rotateLog()
 	now := time.Now()
+	// A scheduled wake becomes an ordinary wake the tick its instant arrives, so
+	// the loop below fires it under the same rules as every other wake.
+	promoteScheduledWakes(d.paths.StateDir, now)
 	actions, fileErrs, err := LoadActions(d.paths.ActionsDir())
 	if err != nil {
 		log.Printf("config error: %v", err)
