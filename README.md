@@ -224,6 +224,7 @@ Every key that has a default:
 | `permission_mode` | agent actions | `default` |
 | `auto_close` | agent actions | `false` |
 | `watch_minutes` | agent actions | `240` |
+| (shutdown wait) | the daemon | not a key: `shutdownWait` is a 10-minute constant in `daemon.go`, since the daemon has no config file of its own; a run still going when a signalled shutdown has waited that long is left to finish and named in the log |
 | `timeout_minutes` | scripts | `30` |
 | `defer_retry_minutes` | scripts | `0` (an exit-75 deferral is recorded once and not retried) |
 | `interval_minutes` | heartbeats | `30` |
