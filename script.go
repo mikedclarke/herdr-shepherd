@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -41,10 +42,20 @@ func runScriptOnce(a *Action, out io.Writer) error {
 // soon as there is one, for a caller that has to record which process the run
 // belongs to.
 func runScriptTracked(a *Action, out io.Writer, started func(pid int)) error {
-	cmd := exec.Command("sh", "-c", a.Command)
-	cmd.Dir = a.Dir()
+	return runCommandTracked(a.Name, a.Dir(), a.Command, time.Duration(a.TimeoutMinutes)*time.Minute, nil, out, started)
+}
+
+// runCommandTracked is the shell runner behind scripts and gates: sh -c
+// command in dir, its own process group, combined output to out, killed as a
+// group at timeout. extraEnv is appended to this process's environment.
+func runCommandTracked(name, dir, command string, timeout time.Duration, extraEnv []string, out io.Writer, started func(pid int)) error {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = dir
 	cmd.Stdout = out
 	cmd.Stderr = out
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Start(); err != nil {
@@ -58,11 +69,11 @@ func runScriptTracked(a *Action, out io.Writer, started func(pid int)) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(time.Duration(a.TimeoutMinutes) * time.Minute):
+	case <-time.After(timeout):
 		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			log.Printf("%s: kill process group: %v", a.Name, err)
+			log.Printf("%s: kill process group: %v", name, err)
 		}
 		<-done
-		return fmt.Errorf("%w after %dm", errScriptTimeout, a.TimeoutMinutes)
+		return fmt.Errorf("%w after %s", errScriptTimeout, timeout.Truncate(time.Second))
 	}
 }

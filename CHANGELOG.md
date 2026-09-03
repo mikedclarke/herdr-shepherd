@@ -5,6 +5,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A `gate` for agent actions.** `gate = "<command>"` on a heartbeat or routine
+  runs that command before the workspace opens, with `SHEPHERD_ACTION` and
+  `SHEPHERD_TRIGGER` in its environment. Exit 0 runs the agent; exit 75 skips
+  the occurrence (a new `skipped` run status, no workspace, no notification, the
+  heartbeat clock advancing as after a completed run); any other exit or a
+  timeout (`gate_timeout_minutes`, default 10) is notified once and the agent
+  runs anyway. Manual runs from the CLI and the board honour it too. The
+  cheap way to run an agent only when a mailbox, a queue or a file says there
+  is something to do.
+
 ## [0.7.4] - 2026-08-26
 
 ### Fixed

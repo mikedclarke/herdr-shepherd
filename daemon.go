@@ -501,7 +501,24 @@ func (d *daemon) fire(a *Action, prevLast time.Time, trigger string, scheduled b
 			d.clearDefer(a.Name)
 		}
 	default:
-		status, detail, startFailed = d.runAgent(a, trigger)
+		skipped := false
+		if a.Gate != "" {
+			paneTrigger := trigger
+			if paneTrigger == "" {
+				paneTrigger = triggerSchedule
+			}
+			verdict, gateDetail := runGate(a, paneTrigger)
+			switch verdict {
+			case gateSkip:
+				status, detail, skipped = "skipped", gateDetail, true
+			case gateFailed:
+				log.Printf("%s: %s", a.Name, gateDetail)
+				d.notify("Shepherd: "+a.Name+" gate failed, running the agent", tailString(gateDetail, 200), "none")
+			}
+		}
+		if !skipped {
+			status, detail, startFailed = d.runAgent(a, trigger)
+		}
 	}
 
 	if startFailed {

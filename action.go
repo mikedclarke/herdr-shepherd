@@ -49,6 +49,11 @@ type Action struct {
 	// DeferRetryMinutes is how long a script that exits 75 (deferred) keeps
 	// being retried on subsequent ticks; 0 means record the deferral and stop.
 	DeferRetryMinutes int `toml:"defer_retry_minutes"`
+	// Gate is a command run before an agent action's workspace opens. Exit 0
+	// runs the agent, exit 75 skips the occurrence, anything else runs the
+	// agent anyway (a broken gate must not silence a schedule).
+	Gate               string `toml:"gate"`
+	GateTimeoutMinutes int    `toml:"gate_timeout_minutes"`
 
 	Heartbeat HeartbeatSpec `toml:"heartbeat"`
 	Schedule  *RoutineSpec  `toml:"schedule"`
@@ -71,6 +76,10 @@ func (a *Action) applyDefaults() {
 	}
 	if a.PermissionMode == "" {
 		a.PermissionMode = "default"
+	}
+	a.Gate = strings.TrimSpace(a.Gate)
+	if a.Gate != "" && a.GateTimeoutMinutes == 0 {
+		a.GateTimeoutMinutes = defaultGateTimeoutMinutes
 	}
 	if a.WatchMinutes <= 0 {
 		a.WatchMinutes = 240
@@ -131,9 +140,18 @@ func (a *Action) validate() error {
 		if a.DeferRetryMinutes != 0 {
 			return fmt.Errorf("%s: defer_retry_minutes only applies to script actions", a.Name)
 		}
+		if a.Gate == "" && a.GateTimeoutMinutes != 0 {
+			return fmt.Errorf("%s: gate_timeout_minutes needs a gate", a.Name)
+		}
+		if a.Gate != "" && (a.GateTimeoutMinutes < 1 || a.GateTimeoutMinutes > maxRunMinutes) {
+			return fmt.Errorf("%s: gate_timeout_minutes must be 1-%d, got %d", a.Name, maxRunMinutes, a.GateTimeoutMinutes)
+		}
 	case KindScript:
 		if strings.TrimSpace(a.Command) == "" {
 			return fmt.Errorf("%s: command is required", a.Name)
+		}
+		if a.Gate != "" || a.GateTimeoutMinutes != 0 {
+			return fmt.Errorf("%s: gate only applies to agent actions", a.Name)
 		}
 		if a.DeferRetryMinutes < 0 || a.DeferRetryMinutes > maxRunMinutes {
 			return fmt.Errorf("%s: defer_retry_minutes must be 0-%d, got %d", a.Name, maxRunMinutes, a.DeferRetryMinutes)

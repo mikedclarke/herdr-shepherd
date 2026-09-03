@@ -57,10 +57,17 @@ type scriptDoneMsg struct {
 type editorDoneMsg struct{ err error }
 
 type agentStartedMsg struct {
+	name     string
+	ws       string
+	err      error
+	gateWarn string // the gate failed and the agent was started anyway
+	logErr   error  // the started record failed to append; reported here, not stderr
+}
+
+type agentSkippedMsg struct {
 	name   string
-	ws     string
-	err    error
-	logErr error // the started record failed to append; reported here, not stderr
+	detail string
+	logErr error
 }
 
 type boardModel struct {
@@ -350,8 +357,19 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.note(styleError.Render(fmt.Sprintf("%s: %v", msg.name, msg.err)))
 		case msg.logErr != nil:
 			m.note(styleError.Render(fmt.Sprintf("%s started in workspace %s; run log: %v", msg.name, msg.ws, msg.logErr)))
+		case msg.gateWarn != "":
+			m.note(styleAttn.Render(fmt.Sprintf("%s started in workspace %s; gate failed: %s", msg.name, msg.ws, firstLine(msg.gateWarn))))
 		default:
 			m.note(fmt.Sprintf("%s started in workspace %s", msg.name, msg.ws))
+		}
+		return m, nil
+	case agentSkippedMsg:
+		delete(m.running, msg.name)
+		m.releaseRun(msg.name)
+		if msg.logErr != nil {
+			m.note(styleError.Render(fmt.Sprintf("%s skipped; run log: %v", msg.name, msg.logErr)))
+		} else {
+			m.note(fmt.Sprintf("%s skipped: %s", msg.name, firstLine(msg.detail)))
 		}
 		return m, nil
 	}
@@ -635,8 +653,22 @@ func (m *boardModel) runSelected() tea.Cmd {
 	}
 	m.note(fmt.Sprintf("starting %s…", a.Name))
 	return func() tea.Msg {
+		gateWarn := ""
+		if a.Gate != "" {
+			began := time.Now()
+			verdict, gateDetail := runGate(a, triggerManual)
+			switch verdict {
+			case gateSkip:
+				return agentSkippedMsg{
+					name: a.Name, detail: gateDetail,
+					logErr: appendRunLog(logFile, skippedRecord(a, gateDetail, triggerManual, began)),
+				}
+			case gateFailed:
+				gateWarn = gateDetail
+			}
+		}
 		ws, err := startAgentRun(a)
-		msg := agentStartedMsg{name: a.Name, ws: ws, err: err}
+		msg := agentStartedMsg{name: a.Name, ws: ws, err: err, gateWarn: gateWarn}
 		if err == nil {
 			msg.logErr = recordManualStart(a, ws)
 		}
@@ -800,6 +832,8 @@ func statusGlyph(status string) string {
 		return styleDim.Render("▸")
 	case "deferred":
 		return styleDim.Render("…")
+	case "skipped":
+		return styleDim.Render("○")
 	case "attention", "cancelled", "interrupted", "deferred-expired":
 		return styleAttn.Render("!")
 	}

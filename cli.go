@@ -290,6 +290,21 @@ func cmdRun(name string) error {
 		return runErr
 	}
 
+	if action.Gate != "" {
+		began := time.Now()
+		verdict, gateDetail := runGate(action, triggerManual)
+		switch verdict {
+		case gateSkip:
+			fmt.Printf("Skipped %s: %s\n", action.Name, gateDetail)
+			if lerr := appendRunLog(p.RunLogFile(), skippedRecord(action, gateDetail, triggerManual, began)); lerr != nil {
+				fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
+			}
+			return nil
+		case gateFailed:
+			fmt.Fprintln(os.Stderr, "warning:", gateDetail, "(running the agent anyway)")
+		}
+	}
+
 	// The lock goes with this process: a manual agent run is handed to the
 	// user once its session is up, and nobody watches it after that.
 	wsID, err := startAgentRun(action)
