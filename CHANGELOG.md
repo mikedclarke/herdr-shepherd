@@ -18,6 +18,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runs anyway. Manual runs from the CLI and the board honour it too. The
   cheap way to run an agent only when a mailbox, a queue or a file says there
   is something to do.
+- **`append_system_prompt` for agent actions.** Passed verbatim to the CLI's
+  `--append-system-prompt` flag (`claude` and `pi`; rejected for `codex`, which
+  has no such flag). pi inlines a value that names an existing file, so a large
+  stable instruction block can live in the system prompt, where an inference
+  server's prefix cache re-serves it instead of re-reading it every run.
+
+### Fixed
+
+- **A form save no longer strips `gate`, `gate_timeout_minutes`, or
+  `append_system_prompt` from an action's file.** The board form has no UI for
+  them yet; they are now carried through an edit instead of silently dropped
+  (the same class of loss as the 0.6.0 `working_hours` fix).
 
 ## [0.7.4] - 2026-08-26
 

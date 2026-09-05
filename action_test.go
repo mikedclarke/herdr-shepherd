@@ -241,6 +241,49 @@ func TestAgentCommand(t *testing.T) {
 	}
 }
 
+func TestAgentCommandAppendSystemPrompt(t *testing.T) {
+	a := &Action{Kind: KindHeartbeat, CLI: "pi", PermissionMode: "default",
+		Prompt: "work the queue", AppendSystemPrompt: "directives/standing.md"}
+	got, err := a.AgentCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "pi --append-system-prompt 'directives/standing.md' 'work the queue'"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	a = &Action{Kind: KindHeartbeat, CLI: "claude", PermissionMode: "auto",
+		Prompt: "hi", AppendSystemPrompt: "always be brief", Model: "opus"}
+	got, err = a.AgentCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "claude --permission-mode auto --append-system-prompt 'always be brief' --model 'opus' 'hi'"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestValidateAppendSystemPrompt(t *testing.T) {
+	a := &Action{Name: "n", Kind: KindHeartbeat, Directory: "~/x", Prompt: "hi",
+		CLI: "codex", AppendSystemPrompt: "extra"}
+	a.applyDefaults()
+	if err := a.validate(); err == nil {
+		t.Error("codex has no --append-system-prompt flag; validation must reject it")
+	}
+	a = &Action{Name: "n", Kind: KindScript, Directory: "~/x", Command: "./run.sh",
+		AppendSystemPrompt: "extra"}
+	a.applyDefaults()
+	if err := a.validate(); err == nil {
+		t.Error("append_system_prompt on a script action must be rejected")
+	}
+	a = &Action{Name: "n", Kind: KindHeartbeat, Directory: "~/x", Prompt: "hi",
+		CLI: "pi", AppendSystemPrompt: "directives/standing.md"}
+	a.applyDefaults()
+	if err := a.validate(); err != nil {
+		t.Errorf("pi with append_system_prompt should validate: %v", err)
+	}
+}
+
 func TestContractPath(t *testing.T) {
 	t.Setenv("HOME", "/home/shep")
 	cases := map[string]string{

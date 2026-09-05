@@ -77,6 +77,12 @@ type formModel struct {
 	editBuf   string
 	err       string
 	infoRows  int // info lines rendered between the fields and Save (View sets it)
+
+	// Fields with no form UI yet, carried through an edit so a form save
+	// cannot silently strip them from the file (agent kinds only).
+	carryGate               string
+	carryGateTimeout        int
+	carryAppendSystemPrompt string
 }
 
 func newFormModel(actionsDir string) *formModel {
@@ -104,6 +110,9 @@ func newFormModelForAction(a *Action, actionsDir string) *formModel {
 	f := newFormModel(actionsDir)
 	f.editPath = a.SourceFile
 	f.origName = a.Name
+	f.carryGate = a.Gate
+	f.carryGateTimeout = a.GateTimeoutMinutes
+	f.carryAppendSystemPrompt = a.AppendSystemPrompt
 	v := f.values
 	v["name"] = a.Name
 	v["kind"] = string(a.Kind)
@@ -541,6 +550,9 @@ func (f *formModel) buildAction() (*Action, error) {
 		if a.WatchMinutes, err = intVal("watch_minutes", "watch"); err != nil {
 			return nil, err
 		}
+		a.Gate = f.carryGate
+		a.GateTimeoutMinutes = f.carryGateTimeout
+		a.AppendSystemPrompt = f.carryAppendSystemPrompt
 	}
 	if a.Kind == KindHeartbeat {
 		if a.Heartbeat.IntervalMinutes, err = intVal("interval_minutes", "every"); err != nil {
@@ -632,6 +644,9 @@ func writeActionFile(path string, a *Action) error {
 		}
 	} else {
 		fmt.Fprintf(&b, "prompt = %q\n", a.Prompt)
+		if a.AppendSystemPrompt != "" {
+			fmt.Fprintf(&b, "append_system_prompt = %q\n", a.AppendSystemPrompt)
+		}
 		fmt.Fprintf(&b, "cli = %q\n", a.CLI)
 		if a.Model != "" {
 			fmt.Fprintf(&b, "model = %q\n", a.Model)
@@ -639,6 +654,10 @@ func writeActionFile(path string, a *Action) error {
 		fmt.Fprintf(&b, "permission_mode = %q\n", a.PermissionMode)
 		fmt.Fprintf(&b, "auto_close = %t\n", a.AutoClose)
 		fmt.Fprintf(&b, "watch_minutes = %d\n", a.WatchMinutes)
+		if a.Gate != "" {
+			fmt.Fprintf(&b, "gate = %q\n", a.Gate)
+			fmt.Fprintf(&b, "gate_timeout_minutes = %d\n", a.GateTimeoutMinutes)
+		}
 	}
 	if a.Kind == KindHeartbeat {
 		fmt.Fprintf(&b, "\n[heartbeat]\ninterval_minutes = %d\n", a.Heartbeat.IntervalMinutes)

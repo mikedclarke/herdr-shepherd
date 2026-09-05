@@ -210,6 +210,8 @@ cron = "0 6 * * 1-5"            # 5-field cron: minute hour day-of-month month d
 
 Agent actions also accept `cli = "claude" | "codex" | "pi"`, `model = "..."`, `enabled = false`, `auto_close = true` (close the run's workspace once the run ends), and `watch_minutes` (how long the daemon watches a session before flagging it). Treat `permission_mode = "skip"` with respect: it maps to the CLI's skip-all-permissions flag, on an unattended schedule. `pi` has no permission flags at all, so it only accepts `permission_mode = "default"`; its `model` value is passed as `--model` (pi treats it as a pattern or id).
 
+Agent actions may set `append_system_prompt = "..."`, passed verbatim to the CLI's `--append-system-prompt` flag (`claude` and `pi` accept it; `codex` has no such flag, so validation rejects the pair). pi treats a value that names an existing file (resolved from the action's directory) as a file to inline, which is the useful form: a large, stable instruction block moved into the system prompt sits in the request's byte-stable head, where an inference server's prefix cache can re-serve it instead of re-reading it every run.
+
 Agent actions may also name a `gate = "./check-inbox.sh"`: a command the daemon runs in the action's directory before it opens the workspace, with `SHEPHERD_ACTION` and `SHEPHERD_TRIGGER` in its environment. Exit 0 runs the agent as usual. Exit 75 skips the occurrence: no workspace, no notification, one `skipped` record carrying the gate's output, and a heartbeat's next run measured from the skip. Any other exit, or a gate still running at `gate_timeout_minutes` (default 10; its process group is killed), is logged, notified once, and the agent runs anyway: a gate is a filter, not a dependency, and a broken one must not silence a schedule. Manual runs honour the gate too. It is the cheap way to run an agent only when there is something for it to do (new mail in a mailbox, a changed file, a queue that is not empty).
 
 Scripts also accept `defer_retry_minutes`. A script that exits with code 75 (`EX_TEMPFAIL`) is saying "not now, retry later" — for example, the resource it needs is busy. Shepherd records that as `deferred` rather than `error`, raises no notification, and — when `defer_retry_minutes` is set — keeps retrying it every tick until it runs or the window closes (a final `deferred-expired` record, with a notification, since the run never happened).
@@ -223,6 +225,7 @@ Every key that has a default:
 | `enabled` | all | **`true`. An action with no `enabled` key is live as soon as the daemon reads its file.** The board's form always writes the key explicitly, and new actions it creates start paused (`enabled = false`). |
 | `cli` | agent actions | `claude` |
 | `model` | agent actions | unset (the CLI's own default model) |
+| `append_system_prompt` | agent actions (`claude`/`pi`) | unset |
 | `permission_mode` | agent actions | `default` |
 | `auto_close` | agent actions | `false` |
 | `watch_minutes` | agent actions | `240` |
@@ -241,7 +244,7 @@ Every key that has a default:
 
 `name`, `kind`, `directory`, and `prompt` (agents) or `command` (scripts) are required; there is nothing sensible to default them to.
 
-Validation rejects rather than clamps: a silently adjusted schedule runs at a time you never asked for. A file is disabled (and reported) if it has an unknown key, an out-of-range hour, day, minute, or `month_day`, a cron expression that can never match, `timeout_minutes`, `watch_minutes`, `gate_timeout_minutes`, or `defer_retry_minutes` over 1440, a `gate` on a script action, `gate_timeout_minutes` without a `gate`, `cli = "pi"` with a `permission_mode` other than `default` (pi has no permission flags), working hours whose `start_hour` equals its `end_hour` (drop the block instead), or a name containing whitespace, `/`, `\`, or a leading `.` (names become file names for the run locks).
+Validation rejects rather than clamps: a silently adjusted schedule runs at a time you never asked for. A file is disabled (and reported) if it has an unknown key, an out-of-range hour, day, minute, or `month_day`, a cron expression that can never match, `timeout_minutes`, `watch_minutes`, `gate_timeout_minutes`, or `defer_retry_minutes` over 1440, a `gate` or `append_system_prompt` on a script action, `append_system_prompt` with `cli = "codex"`, `gate_timeout_minutes` without a `gate`, `cli = "pi"` with a `permission_mode` other than `default` (pi has no permission flags), working hours whose `start_hour` equals its `end_hour` (drop the block instead), or a name containing whitespace, `/`, `\`, or a leading `.` (names become file names for the run locks).
 
 ### Semantics worth knowing
 

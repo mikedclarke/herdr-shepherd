@@ -34,18 +34,23 @@ type RoutineSpec struct {
 }
 
 type Action struct {
-	Name           string `toml:"name"`
-	Kind           Kind   `toml:"kind"`
-	Directory      string `toml:"directory"`
-	Enabled        *bool  `toml:"enabled"`
-	Prompt         string `toml:"prompt"`
-	CLI            string `toml:"cli"`
-	Model          string `toml:"model"`
-	PermissionMode string `toml:"permission_mode"`
-	AutoClose      bool   `toml:"auto_close"`
-	WatchMinutes   int    `toml:"watch_minutes"`
-	Command        string `toml:"command"`
-	TimeoutMinutes int    `toml:"timeout_minutes"`
+	Name      string `toml:"name"`
+	Kind      Kind   `toml:"kind"`
+	Directory string `toml:"directory"`
+	Enabled   *bool  `toml:"enabled"`
+	Prompt    string `toml:"prompt"`
+	// AppendSystemPrompt is passed verbatim to the CLI's --append-system-prompt
+	// flag (claude and pi accept it; pi also treats an existing file path as a
+	// file to inline). It lets a large stable instruction block live in the
+	// system prompt, where an inference server's prefix cache can re-serve it.
+	AppendSystemPrompt string `toml:"append_system_prompt"`
+	CLI                string `toml:"cli"`
+	Model              string `toml:"model"`
+	PermissionMode     string `toml:"permission_mode"`
+	AutoClose          bool   `toml:"auto_close"`
+	WatchMinutes       int    `toml:"watch_minutes"`
+	Command            string `toml:"command"`
+	TimeoutMinutes     int    `toml:"timeout_minutes"`
 	// DeferRetryMinutes is how long a script that exits 75 (deferred) keeps
 	// being retried on subsequent ticks; 0 means record the deferral and stop.
 	DeferRetryMinutes int `toml:"defer_retry_minutes"`
@@ -137,6 +142,9 @@ func (a *Action) validate() error {
 		if a.CLI == "pi" && a.PermissionMode != "default" {
 			return fmt.Errorf("%s: pi has no permission flags; permission_mode must be default, got %q", a.Name, a.PermissionMode)
 		}
+		if a.AppendSystemPrompt != "" && a.CLI == "codex" {
+			return fmt.Errorf("%s: codex has no --append-system-prompt flag; append_system_prompt needs claude or pi", a.Name)
+		}
 		if a.DeferRetryMinutes != 0 {
 			return fmt.Errorf("%s: defer_retry_minutes only applies to script actions", a.Name)
 		}
@@ -152,6 +160,9 @@ func (a *Action) validate() error {
 		}
 		if a.Gate != "" || a.GateTimeoutMinutes != 0 {
 			return fmt.Errorf("%s: gate only applies to agent actions", a.Name)
+		}
+		if a.AppendSystemPrompt != "" {
+			return fmt.Errorf("%s: append_system_prompt only applies to agent actions", a.Name)
 		}
 		if a.DeferRetryMinutes < 0 || a.DeferRetryMinutes > maxRunMinutes {
 			return fmt.Errorf("%s: defer_retry_minutes must be 0-%d, got %d", a.Name, maxRunMinutes, a.DeferRetryMinutes)
@@ -273,6 +284,9 @@ func (a *Action) AgentCommand() (string, error) {
 		}
 	default:
 		return "", fmt.Errorf("unsupported cli %q", a.CLI)
+	}
+	if s := strings.TrimSpace(a.AppendSystemPrompt); s != "" {
+		parts = append(parts, "--append-system-prompt", shellQuote(s))
 	}
 	if m := strings.TrimSpace(a.Model); m != "" {
 		parts = append(parts, "--model", shellQuote(m))

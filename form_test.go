@@ -394,6 +394,46 @@ end_hour = 18
 	}
 }
 
+func TestFormGateAndAppendSurviveAnUnrelatedEdit(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "pulse.toml", `name = "pulse"
+kind = "heartbeat"
+directory = "~"
+prompt = "@.tmp/prompt.md"
+append_system_prompt = "directives/standing.md"
+cli = "pi"
+enabled = true
+gate = "scripts/gate.sh"
+gate_timeout_minutes = 10
+
+[heartbeat]
+interval_minutes = 30
+`)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("fixture does not load: %v %v", err, fileErrs)
+	}
+	f := newFormModelForAction(actions[0], dir)
+	f.values["watch_minutes"] = "120"
+	if done, saved := f.trySave(); !done || !saved {
+		t.Fatalf("save failed: %s", f.err)
+	}
+	actions, fileErrs, _ = LoadActions(dir)
+	if len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("saved file does not load: %v", fileErrs)
+	}
+	a := actions[0]
+	if a.Gate != "scripts/gate.sh" || a.GateTimeoutMinutes != 10 {
+		t.Errorf("gate lost across an unrelated edit: %q %d", a.Gate, a.GateTimeoutMinutes)
+	}
+	if a.AppendSystemPrompt != "directives/standing.md" {
+		t.Errorf("append_system_prompt lost across an unrelated edit: %q", a.AppendSystemPrompt)
+	}
+	if a.WatchMinutes != 120 {
+		t.Errorf("the edit itself was lost: %d", a.WatchMinutes)
+	}
+}
+
 func TestFormBlankWorkingHoursWriteNoTable(t *testing.T) {
 	dir := t.TempDir()
 	f := newFormModel(dir)
