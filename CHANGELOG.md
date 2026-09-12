@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **An `[env]` table for every action.** Extra environment variables for the
+  run: an agent action's pane gets them through the workspace herdr opens
+  (beside `SHEPHERD_ACTION` and `SHEPHERD_TRIGGER`, which win), a script and a
+  gate get them in the child process. Values expand `~` and `$VARS` like
+  `directory`. Keys must be variable names; the board form carries the table
+  through an edit. The case that asked for it: pointing a scheduled pi agent at
+  a config directory of its own with `PI_CODING_AGENT_DIR`, so it never shares
+  settings, models or trust with the interactive pi on the same machine.
+
 ## [0.8.0] - 2026-09-05
 
 ### Added

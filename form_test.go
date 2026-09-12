@@ -526,3 +526,41 @@ func TestCtrlCQuitsFromAHalfTypedField(t *testing.T) {
 		t.Errorf("ctrl+c did not quit: %T", cmd())
 	}
 }
+
+func TestFormEnvSurvivesAnUnrelatedEdit(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "pulse.toml", `name = "pulse"
+kind = "heartbeat"
+directory = "~"
+prompt = "@.tmp/prompt.md"
+cli = "pi"
+enabled = true
+
+[env]
+AGENT_CONFIG_DIR = "~/agent-config"
+PROBE = "a \"quoted\" value"
+
+[heartbeat]
+interval_minutes = 30
+`)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("fixture does not load: %v %v", err, fileErrs)
+	}
+	f := newFormModelForAction(actions[0], dir)
+	f.values["watch_minutes"] = "120"
+	if done, saved := f.trySave(); !done || !saved {
+		t.Fatalf("save failed: %s", f.err)
+	}
+	actions, fileErrs, _ = LoadActions(dir)
+	if len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("saved file does not load: %v", fileErrs)
+	}
+	a := actions[0]
+	if a.Env["AGENT_CONFIG_DIR"] != "~/agent-config" || a.Env["PROBE"] != `a "quoted" value` {
+		t.Errorf("env table lost or mangled across an unrelated edit: %v", a.Env)
+	}
+	if a.WatchMinutes != 120 {
+		t.Errorf("the edit itself was lost: %d", a.WatchMinutes)
+	}
+}

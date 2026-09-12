@@ -42,7 +42,7 @@ func runScriptOnce(a *Action, out io.Writer) error {
 // soon as there is one, for a caller that has to record which process the run
 // belongs to.
 func runScriptTracked(a *Action, out io.Writer, started func(pid int)) error {
-	return runCommandTracked(a.Name, a.Dir(), a.Command, time.Duration(a.TimeoutMinutes)*time.Minute, nil, out, started)
+	return runCommandTracked(a.Name, a.Dir(), a.Command, time.Duration(a.TimeoutMinutes)*time.Minute, a.EnvList(), out, started)
 }
 
 // runCommandTracked is the shell runner behind scripts and gates: sh -c

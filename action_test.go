@@ -298,3 +298,76 @@ func TestContractPath(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadActionsAcceptsAnEnvTable(t *testing.T) {
+	t.Setenv("HOME", "/home/shep")
+	dir := t.TempDir()
+	writeAction(t, dir, "triage.toml", `
+name = "inbox-triage"
+kind = "heartbeat"
+directory = "~/projects/support"
+prompt = "Triage the inbox."
+cli = "pi"
+
+[env]
+AGENT_CONFIG_DIR = "~/projects/support/agent-config"
+PROBE = "yes"
+
+[heartbeat]
+interval_minutes = 15
+`)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) > 0 || len(actions) != 1 {
+		t.Fatalf("err=%v fileErrs=%v actions=%d", err, fileErrs, len(actions))
+	}
+	a := actions[0]
+	if a.Env["PROBE"] != "yes" || a.Env["AGENT_CONFIG_DIR"] != "~/projects/support/agent-config" {
+		t.Errorf("env table not loaded raw: %v", a.Env)
+	}
+	wantList := []string{"AGENT_CONFIG_DIR=/home/shep/projects/support/agent-config", "PROBE=yes"}
+	if got := a.EnvList(); len(got) != 2 || got[0] != wantList[0] || got[1] != wantList[1] {
+		t.Errorf("EnvList expands ~ and sorts keys, got %v", got)
+	}
+	m := a.EnvMap()
+	if m["AGENT_CONFIG_DIR"] != "/home/shep/projects/support/agent-config" {
+		t.Errorf("EnvMap expands ~, got %v", m)
+	}
+	m["EXTRA"] = "x"
+	if _, leaked := a.Env["EXTRA"]; leaked {
+		t.Error("EnvMap must hand out a copy")
+	}
+}
+
+func TestLoadActionsRejectsABadEnvKey(t *testing.T) {
+	dir := t.TempDir()
+	writeAction(t, dir, "triage.toml", `
+name = "inbox-triage"
+kind = "heartbeat"
+directory = "/tmp"
+prompt = "x"
+
+[env]
+"BAD-KEY" = "x"
+
+[heartbeat]
+interval_minutes = 15
+`)
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(actions) != 0 || len(fileErrs) != 1 || !strings.Contains(fileErrs[0].Error(), `env key "BAD-KEY"`) {
+		t.Fatalf("err=%v fileErrs=%v actions=%d", err, fileErrs, len(actions))
+	}
+}
+
+func TestEnvWithoutATableIsEmpty(t *testing.T) {
+	a := &Action{Name: "n", Kind: KindScript, Directory: "/tmp", Command: "true"}
+	a.applyDefaults()
+	if err := a.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if list := a.EnvList(); len(list) != 0 {
+		t.Errorf("no table, no pairs: %v", list)
+	}
+	if m := a.EnvMap(); m == nil || len(m) != 0 {
+		t.Errorf("no table, an empty map the caller can add to: %v", m)
+	}
+}

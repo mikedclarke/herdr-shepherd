@@ -23,10 +23,10 @@ func launchAgentWorkspace(client herdrAPI, a *Action, settle time.Duration, trig
 	if err != nil {
 		return "", "", err
 	}
-	wsID, paneID, err = client.workspaceCreate(a.Dir(), "Shepherd · "+a.Name, map[string]string{
-		"SHEPHERD_ACTION":  a.Name,
-		"SHEPHERD_TRIGGER": trigger,
-	})
+	env := a.EnvMap()
+	env["SHEPHERD_ACTION"] = a.Name
+	env["SHEPHERD_TRIGGER"] = trigger
+	wsID, paneID, err = client.workspaceCreate(a.Dir(), "Shepherd · "+a.Name, env)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", errLaunchCreate, err)
 	}

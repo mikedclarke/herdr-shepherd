@@ -199,3 +199,12 @@ func TestFireRunsTheAgentWhenTheGatePasses(t *testing.T) {
 		}
 	}
 }
+
+func TestRunGateSeesTheActionEnv(t *testing.T) {
+	a := gatedHeartbeat(t, `echo "$PROBE/$SHEPHERD_ACTION"; exit 75`)
+	a.Env = map[string]string{"PROBE": "from-table"}
+	_, detail := runGate(a, triggerSchedule)
+	if detail != "from-table/inbox-triage" {
+		t.Errorf("the gate must see the table beside the daemon's variables, got %q", detail)
+	}
+}

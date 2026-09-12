@@ -59,6 +59,9 @@ type Action struct {
 	// agent anyway (a broken gate must not silence a schedule).
 	Gate               string `toml:"gate"`
 	GateTimeoutMinutes int    `toml:"gate_timeout_minutes"`
+	// Env is extra environment for the run: an agent pane gets it through the
+	// workspace herdr opens, a script or gate through its child process.
+	Env map[string]string `toml:"env"`
 
 	Heartbeat HeartbeatSpec `toml:"heartbeat"`
 	Schedule  *RoutineSpec  `toml:"schedule"`
@@ -125,6 +128,11 @@ func (a *Action) validate() error {
 	}
 	if strings.HasPrefix(a.Name, ".") {
 		return fmt.Errorf("name %q must not start with a dot", a.Name)
+	}
+	for _, k := range a.envKeys() {
+		if !validEnvKey(k) {
+			return fmt.Errorf("%s: env key %q must be a variable name (letters, digits, underscores, not starting with a digit)", a.Name, k)
+		}
 	}
 	switch a.Kind {
 	case KindHeartbeat, KindRoutine:
@@ -220,6 +228,52 @@ func (a *Action) validate() error {
 // Dir returns the action's directory with ~ and $VARS expanded.
 func (a *Action) Dir() string {
 	return expandPath(a.Directory)
+}
+
+// envKeys returns the env table's keys in a stable order.
+func (a *Action) envKeys() []string {
+	keys := make([]string, 0, len(a.Env))
+	for k := range a.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// EnvMap returns the env table with ~ and $VARS expanded in each value, as a
+// fresh map the caller may add to.
+func (a *Action) EnvMap() map[string]string {
+	out := make(map[string]string, len(a.Env))
+	for k, v := range a.Env {
+		out[k] = expandPath(v)
+	}
+	return out
+}
+
+// EnvList is EnvMap as KEY=value pairs, the shape a child process takes.
+func (a *Action) EnvList() []string {
+	out := make([]string, 0, len(a.Env))
+	for _, k := range a.envKeys() {
+		out = append(out, k+"="+expandPath(a.Env[k]))
+	}
+	return out
+}
+
+// validEnvKey is a portable environment variable name, which is also a bare
+// TOML key, so a form save can write it back unquoted.
+func validEnvKey(k string) bool {
+	if k == "" {
+		return false
+	}
+	for i, c := range k {
+		switch {
+		case c == '_', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func expandPath(p string) string {

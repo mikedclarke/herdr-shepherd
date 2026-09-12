@@ -54,3 +54,22 @@ func TestLaunchAgentWorkspaceRejectsABadCommand(t *testing.T) {
 		t.Errorf("nothing should have been submitted: %v", fake.commands)
 	}
 }
+
+func TestLaunchAgentWorkspacePassesTheActionEnv(t *testing.T) {
+	t.Setenv("HOME", "/home/shep")
+	fake := &scriptedHerdr{}
+	a := watchedAction()
+	a.Env = map[string]string{"AGENT_CONFIG_DIR": "~/agent-config", "SHEPHERD_ACTION": "spoofed"}
+	if _, _, err := launchAgentWorkspace(fake, a, 0, triggerSchedule); err != nil {
+		t.Fatal(err)
+	}
+	if fake.env["AGENT_CONFIG_DIR"] != "/home/shep/agent-config" {
+		t.Errorf("the pane gets the action env with ~ expanded, got %v", fake.env)
+	}
+	if fake.env["SHEPHERD_ACTION"] != a.Name || fake.env["SHEPHERD_TRIGGER"] != triggerSchedule {
+		t.Errorf("the daemon's own variables win over the table, got %v", fake.env)
+	}
+	if _, leaked := a.Env["SHEPHERD_TRIGGER"]; leaked {
+		t.Error("launching must not write into the action's table")
+	}
+}

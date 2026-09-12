@@ -22,12 +22,12 @@ const (
 	gateFailed
 )
 
-// runGate runs the action's gate command in the action directory with
-// SHEPHERD_ACTION and SHEPHERD_TRIGGER set, exactly as the pane would see
-// them, and returns its verdict with the output tail.
+// runGate runs the action's gate command in the action directory with the
+// action's env plus SHEPHERD_ACTION and SHEPHERD_TRIGGER set, exactly as the
+// pane would see them, and returns its verdict with the output tail.
 func runGate(a *Action, trigger string) (gateVerdict, string) {
 	out := &tailBuffer{max: outputTailMax}
-	env := []string{"SHEPHERD_ACTION=" + a.Name, "SHEPHERD_TRIGGER=" + trigger}
+	env := append(a.EnvList(), "SHEPHERD_ACTION="+a.Name, "SHEPHERD_TRIGGER="+trigger)
 	timeout := time.Duration(a.GateTimeoutMinutes) * time.Minute
 	err := runCommandTracked(a.Name, a.Dir(), a.Gate, timeout, env, out, nil)
 	switch {

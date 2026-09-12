@@ -83,6 +83,7 @@ type formModel struct {
 	carryGate               string
 	carryGateTimeout        int
 	carryAppendSystemPrompt string
+	carryEnv                map[string]string
 }
 
 func newFormModel(actionsDir string) *formModel {
@@ -113,6 +114,7 @@ func newFormModelForAction(a *Action, actionsDir string) *formModel {
 	f.carryGate = a.Gate
 	f.carryGateTimeout = a.GateTimeoutMinutes
 	f.carryAppendSystemPrompt = a.AppendSystemPrompt
+	f.carryEnv = a.Env
 	v := f.values
 	v["name"] = a.Name
 	v["kind"] = string(a.Kind)
@@ -554,6 +556,7 @@ func (f *formModel) buildAction() (*Action, error) {
 		a.GateTimeoutMinutes = f.carryGateTimeout
 		a.AppendSystemPrompt = f.carryAppendSystemPrompt
 	}
+	a.Env = f.carryEnv
 	if a.Kind == KindHeartbeat {
 		if a.Heartbeat.IntervalMinutes, err = intVal("interval_minutes", "every"); err != nil {
 			return nil, err
@@ -657,6 +660,12 @@ func writeActionFile(path string, a *Action) error {
 		if a.Gate != "" {
 			fmt.Fprintf(&b, "gate = %q\n", a.Gate)
 			fmt.Fprintf(&b, "gate_timeout_minutes = %d\n", a.GateTimeoutMinutes)
+		}
+	}
+	if len(a.Env) > 0 {
+		b.WriteString("\n[env]\n")
+		for _, k := range a.envKeys() {
+			fmt.Fprintf(&b, "%s = %q\n", k, a.Env[k])
 		}
 	}
 	if a.Kind == KindHeartbeat {

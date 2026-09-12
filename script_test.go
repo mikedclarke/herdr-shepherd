@@ -79,3 +79,16 @@ func TestRunScriptOnceStartFailureIsReported(t *testing.T) {
 		t.Fatal("a script that cannot start must report an error")
 	}
 }
+
+func TestRunScriptOnceSeesTheActionEnv(t *testing.T) {
+	t.Setenv("HOME", "/home/shep")
+	out := &tailBuffer{max: outputTailMax}
+	a := scriptAction("build-sync", `printf '%s' "$AGENT_CONFIG_DIR"`)
+	a.Env = map[string]string{"AGENT_CONFIG_DIR": "~/agent-config"}
+	if err := runScriptOnce(a, out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "/home/shep/agent-config" {
+		t.Errorf("the script gets the table with ~ expanded, got %q", got)
+	}
+}
