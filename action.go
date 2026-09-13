@@ -46,11 +46,14 @@ type Action struct {
 	AppendSystemPrompt string `toml:"append_system_prompt"`
 	CLI                string `toml:"cli"`
 	Model              string `toml:"model"`
-	PermissionMode     string `toml:"permission_mode"`
-	AutoClose          bool   `toml:"auto_close"`
-	WatchMinutes       int    `toml:"watch_minutes"`
-	Command            string `toml:"command"`
-	TimeoutMinutes     int    `toml:"timeout_minutes"`
+	// Thinking maps to pi's --thinking flag (off, minimal, low, medium, high,
+	// xhigh, max). pi only; blank leaves the model's default reasoning level.
+	Thinking       string `toml:"thinking"`
+	PermissionMode string `toml:"permission_mode"`
+	AutoClose      bool   `toml:"auto_close"`
+	WatchMinutes   int    `toml:"watch_minutes"`
+	Command        string `toml:"command"`
+	TimeoutMinutes int    `toml:"timeout_minutes"`
 	// DeferRetryMinutes is how long a script that exits 75 (deferred) keeps
 	// being retried on subsequent ticks; 0 means record the deferral and stop.
 	DeferRetryMinutes int `toml:"defer_retry_minutes"`
@@ -113,6 +116,12 @@ func (a *Action) applyDefaults() {
 // typo, and it would pin a run for the daemon's lifetime.
 const maxRunMinutes = 1440
 
+// thinkingLevels are the values pi's --thinking flag accepts.
+var thinkingLevels = map[string]bool{
+	"off": true, "minimal": true, "low": true, "medium": true,
+	"high": true, "xhigh": true, "max": true,
+}
+
 // validate rejects rather than clamps: a silently adjusted schedule runs at a
 // time the user never asked for.
 func (a *Action) validate() error {
@@ -153,6 +162,14 @@ func (a *Action) validate() error {
 		if a.AppendSystemPrompt != "" && a.CLI == "codex" {
 			return fmt.Errorf("%s: codex has no --append-system-prompt flag; append_system_prompt needs claude or pi", a.Name)
 		}
+		if a.Thinking != "" {
+			if a.CLI != "pi" {
+				return fmt.Errorf("%s: thinking is a pi flag; it needs cli = pi, got %q", a.Name, a.CLI)
+			}
+			if !thinkingLevels[a.Thinking] {
+				return fmt.Errorf("%s: thinking must be one of off, minimal, low, medium, high, xhigh, max, got %q", a.Name, a.Thinking)
+			}
+		}
 		if a.DeferRetryMinutes != 0 {
 			return fmt.Errorf("%s: defer_retry_minutes only applies to script actions", a.Name)
 		}
@@ -171,6 +188,9 @@ func (a *Action) validate() error {
 		}
 		if a.AppendSystemPrompt != "" {
 			return fmt.Errorf("%s: append_system_prompt only applies to agent actions", a.Name)
+		}
+		if a.Thinking != "" {
+			return fmt.Errorf("%s: thinking only applies to agent actions", a.Name)
 		}
 		if a.DeferRetryMinutes < 0 || a.DeferRetryMinutes > maxRunMinutes {
 			return fmt.Errorf("%s: defer_retry_minutes must be 0-%d, got %d", a.Name, maxRunMinutes, a.DeferRetryMinutes)
@@ -344,6 +364,9 @@ func (a *Action) AgentCommand() (string, error) {
 	}
 	if m := strings.TrimSpace(a.Model); m != "" {
 		parts = append(parts, "--model", shellQuote(m))
+	}
+	if t := strings.TrimSpace(a.Thinking); t != "" && a.CLI == "pi" {
+		parts = append(parts, "--thinking", shellQuote(t))
 	}
 	parts = append(parts, shellQuote(prompt))
 	return strings.Join(parts, " "), nil

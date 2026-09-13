@@ -134,7 +134,12 @@ The board is fully mouse-driven too: wheel to scroll, click a row to select it, 
 
 Creating and editing never require touching a file: the trailing `+ new action…` row (or `n`) opens the guided form, and `e` / `[ edit ]` opens the same form pre-filled. The form asks for fields by name: pick the kind and the schedule preset with `‹ ›`, fill in the rest with per-field help. It generates valid TOML, checked by the same validation the daemon uses before anything is written. New actions are written with `enabled = false`, so they start paused until you enable them; the form never overwrites another action, and renaming moves the file for you.
 
-Some fields are guided rather than typed. For `cli = "claude"` the `model` field is a `‹ ›` list of common models with a `custom…` step for any other id (nothing is rejected, so a model not on the list still works). Day-of-week is Mon–Sun chips (`←/→` to move, space to toggle), not a `0=Sun..6=Sat` list. A `next run:` line under the fields previews the next few fire times for the schedule as you type it, so you can see it is right before you save. `permission_mode = "skip"` shows in amber, since it runs unattended with no prompts.
+Some fields are guided rather than typed. The `model` field adapts to the `cli`:
+
+- For `cli = "pi"` the form asks pi for its live catalog (`pi --list-models`, against the action's own `PI_CODING_AGENT_DIR` when it sets one), so you pick a `provider` with `‹ ›` and then a `model` from that provider's real models, plus a `thinking` level (`off … max`). Both the model list and the thinking level are the ones that machine actually has, not a fixed table; a `custom…` step still types any id, and if pi cannot be reached the field falls back to free text. Switching provider clears the model back to the CLI default.
+- For `cli = "claude"` the `model` field is a `‹ ›` list of common models with a `custom…` step for any other id (nothing is rejected, so a model not on the list still works). `codex` keeps a free-text id.
+
+Day-of-week is Mon–Sun chips (`←/→` to move, space to toggle), not a `0=Sun..6=Sat` list. A `next run:` line under the fields previews the next few fire times for the schedule as you type it, so you can see it is right before you save. `permission_mode = "skip"` shows in amber, since it runs unattended with no prompts.
 
 For hand-maintained TOML (comments, unusual formatting), `E` opens the raw file in `$EDITOR`, falling back to nano rather than stranding you in vi. A form save rewrites the file cleanly, so keep comment-heavy files on the `E` path.
 
@@ -210,6 +215,8 @@ cron = "0 6 * * 1-5"            # 5-field cron: minute hour day-of-month month d
 
 Agent actions also accept `cli = "claude" | "codex" | "pi"`, `model = "..."`, `enabled = false`, `auto_close = true` (close the run's workspace once the run ends), and `watch_minutes` (how long the daemon watches a session before flagging it). Treat `permission_mode = "skip"` with respect: it maps to the CLI's skip-all-permissions flag, on an unattended schedule. `pi` has no permission flags at all, so it only accepts `permission_mode = "default"`; its `model` value is passed as `--model` (pi treats it as a pattern or id).
 
+A `pi` agent action may also set `thinking = "..."` (one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), passed as pi's `--thinking` flag to set the reasoning level for the run. It is pi-only: validation rejects it with `cli = "claude"` or `"codex"`, and on a script action. Blank leaves the model's own default.
+
 Agent actions may set `append_system_prompt = "..."`, passed verbatim to the CLI's `--append-system-prompt` flag (`claude` and `pi` accept it; `codex` has no such flag, so validation rejects the pair). pi treats a value that names an existing file (resolved from the action's directory) as a file to inline, which is the useful form: a large, stable instruction block moved into the system prompt sits in the request's byte-stable head, where an inference server's prefix cache can re-serve it instead of re-reading it every run.
 
 Agent actions may also name a `gate = "./check-inbox.sh"`: a command the daemon runs in the action's directory before it opens the workspace, with `SHEPHERD_ACTION` and `SHEPHERD_TRIGGER` in its environment. Exit 0 runs the agent as usual. Exit 75 skips the occurrence: no workspace, no notification, one `skipped` record carrying the gate's output, and a heartbeat's next run measured from the skip. Any other exit, or a gate still running at `gate_timeout_minutes` (default 10; its process group is killed), is logged, notified once, and the agent runs anyway: a gate is a filter, not a dependency, and a broken one must not silence a schedule. Manual runs honour the gate too. It is the cheap way to run an agent only when there is something for it to do (new mail in a mailbox, a changed file, a queue that is not empty).
@@ -234,6 +241,7 @@ Every key that has a default:
 | `enabled` | all | **`true`. An action with no `enabled` key is live as soon as the daemon reads its file.** The board's form always writes the key explicitly, and new actions it creates start paused (`enabled = false`). |
 | `cli` | agent actions | `claude` |
 | `model` | agent actions | unset (the CLI's own default model) |
+| `thinking` | agent actions (`pi`) | unset (the model's own reasoning level) |
 | `append_system_prompt` | agent actions (`claude`/`pi`) | unset |
 | `permission_mode` | agent actions | `default` |
 | `auto_close` | agent actions | `false` |
@@ -254,7 +262,7 @@ Every key that has a default:
 
 `name`, `kind`, `directory`, and `prompt` (agents) or `command` (scripts) are required; there is nothing sensible to default them to.
 
-Validation rejects rather than clamps: a silently adjusted schedule runs at a time you never asked for. A file is disabled (and reported) if it has an unknown key, an out-of-range hour, day, minute, or `month_day`, a cron expression that can never match, `timeout_minutes`, `watch_minutes`, `gate_timeout_minutes`, or `defer_retry_minutes` over 1440, a `gate` or `append_system_prompt` on a script action, `append_system_prompt` with `cli = "codex"`, `gate_timeout_minutes` without a `gate`, an `[env]` key that is not a variable name, `cli = "pi"` with a `permission_mode` other than `default` (pi has no permission flags), working hours whose `start_hour` equals its `end_hour` (drop the block instead), or a name containing whitespace, `/`, `\`, or a leading `.` (names become file names for the run locks).
+Validation rejects rather than clamps: a silently adjusted schedule runs at a time you never asked for. A file is disabled (and reported) if it has an unknown key, an out-of-range hour, day, minute, or `month_day`, a cron expression that can never match, `timeout_minutes`, `watch_minutes`, `gate_timeout_minutes`, or `defer_retry_minutes` over 1440, a `gate`, `append_system_prompt`, or `thinking` on a script action, `append_system_prompt` with `cli = "codex"`, `thinking` on any cli but `pi` or with an unknown level, `gate_timeout_minutes` without a `gate`, an `[env]` key that is not a variable name, `cli = "pi"` with a `permission_mode` other than `default` (pi has no permission flags), working hours whose `start_hour` equals its `end_hour` (drop the block instead), or a name containing whitespace, `/`, `\`, or a leading `.` (names become file names for the run locks).
 
 ### Semantics worth knowing
 

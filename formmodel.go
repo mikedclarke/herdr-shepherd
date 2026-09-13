@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -46,6 +48,90 @@ var claudeModelChoices = []choice{
 	{"fable 5", "claude-fable-5"},
 }
 
+// thinkingChoices are pi's --thinking levels, offered when cli = "pi". "default"
+// writes nothing, leaving the model's own reasoning level.
+var thinkingChoices = []choice{
+	{"default", ""},
+	{"off", "off"},
+	{"minimal", "minimal"},
+	{"low", "low"},
+	{"medium", "medium"},
+	{"high", "high"},
+	{"xhigh", "xhigh"},
+	{"max", "max"},
+}
+
+// piModel is one row of `pi --list-models`.
+type piModel struct {
+	provider string
+	id       string
+	thinking bool
+}
+
+// parsePiModels reads the `pi --list-models` table (provider, model, context,
+// max-out, thinking, images). A short or header line is skipped.
+func parsePiModels(out string) []piModel {
+	var models []piModel
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || (f[0] == "provider" && f[1] == "model") {
+			continue
+		}
+		models = append(models, piModel{provider: f[0], id: f[1], thinking: f[4] == "yes"})
+	}
+	return models
+}
+
+// discoverPiModels asks pi for the models available in the given config home
+// (blank inherits the caller's PI_CODING_AGENT_DIR), so the picker shows the
+// same catalog the action will resolve against.
+func discoverPiModels(piHome string) ([]piModel, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "pi", "--list-models")
+	cmd.Env = os.Environ()
+	if piHome != "" {
+		cmd.Env = append(cmd.Env, "PI_CODING_AGENT_DIR="+piHome)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return parsePiModels(string(out)), nil
+}
+
+// piProviders lists the distinct providers in first-seen order, matching the
+// grouping pi prints.
+func piProviders(models []piModel) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range models {
+		if !seen[m.provider] {
+			seen[m.provider] = true
+			out = append(out, m.provider)
+		}
+	}
+	return out
+}
+
+func providerOf(models []piModel, id string) string {
+	for _, m := range models {
+		if m.id == id {
+			return m.provider
+		}
+	}
+	return ""
+}
+
+func containsStr(xs []string, x string) bool {
+	for _, s := range xs {
+		if s == x {
+			return true
+		}
+	}
+	return false
+}
+
 // dayOrder lays the weekday chips out Monday-first for reading; the stored
 // values stay 0=Sun..6=Sat to match the schedule and working-hours formats.
 var dayOrder = []int{1, 2, 3, 4, 5, 6, 0}
@@ -84,6 +170,83 @@ type formModel struct {
 	carryGateTimeout        int
 	carryAppendSystemPrompt string
 	carryEnv                map[string]string
+
+	// Discovered pi model catalog for the model/provider pickers, fetched once
+	// per form (blocking) the first time cli = "pi" is shown.
+	piModels      []piModel
+	piDiscovered  bool
+	piDiscoverErr error
+}
+
+// ensurePiModels fetches the pi model catalog once, against the action's own
+// PI_CODING_AGENT_DIR when it sets one. A failure leaves piModels empty and the
+// form falls back to a free-text model field.
+func (f *formModel) ensurePiModels() {
+	if f.piDiscovered {
+		return
+	}
+	f.piDiscovered = true
+	home := ""
+	if f.carryEnv != nil {
+		home = expandPath(f.carryEnv["PI_CODING_AGENT_DIR"])
+	}
+	f.piModels, f.piDiscoverErr = discoverPiModels(home)
+}
+
+func (f *formModel) thinkingField() formField {
+	return formField{key: "thinking", label: "thinking", ftype: ftChoice, choices: thinkingChoices, help: "reasoning level; default = the model's own"}
+}
+
+// modelFields builds the model row(s) for the current cli. claude keeps its
+// curated presets; codex keeps a free-text id. pi discovers the live catalog
+// (pi --list-models) and offers a provider filter, a model picker for that
+// provider, and a thinking level; a discovery failure degrades to free text.
+func (f *formModel) modelFields() []formField {
+	switch f.values["cli"] {
+	case "claude":
+		return []formField{{key: "model", label: "model", ftype: ftChoice, choices: claudeModelChoices, custom: true, help: "‹ › to pick; cycle to custom… to type any id"}}
+	case "pi":
+		f.ensurePiModels()
+		if len(f.piModels) == 0 {
+			help := "optional; blank = the CLI's default"
+			if f.piDiscoverErr != nil {
+				help = "pi --list-models unavailable; type an id, blank = default"
+			}
+			return []formField{
+				{key: "model", label: "model", ftype: ftText, help: help},
+				f.thinkingField(),
+			}
+		}
+		providers := piProviders(f.piModels)
+		if !containsStr(providers, f.values["provider"]) {
+			f.values["provider"] = providerOf(f.piModels, f.values["model"])
+			if !containsStr(providers, f.values["provider"]) {
+				f.values["provider"] = providers[0]
+			}
+		}
+		provChoices := make([]choice, len(providers))
+		for i, p := range providers {
+			provChoices[i] = choice{p, p}
+		}
+		modelChoices := []choice{{"default", ""}}
+		for _, m := range f.piModels {
+			if m.provider != f.values["provider"] {
+				continue
+			}
+			label := m.id
+			if m.thinking {
+				label += "  ·thinks"
+			}
+			modelChoices = append(modelChoices, choice{label, m.id})
+		}
+		return []formField{
+			{key: "provider", label: "provider", ftype: ftChoice, choices: provChoices, help: "‹ › to switch provider; the model list filters to it"},
+			{key: "model", label: "model", ftype: ftChoice, choices: modelChoices, custom: true, help: "‹ › to pick; custom… types any id · default = the CLI's own"},
+			f.thinkingField(),
+		}
+	default: // codex
+		return []formField{{key: "model", label: "model", ftype: ftText, help: "optional; blank = the CLI's default"}}
+	}
 }
 
 func newFormModel(actionsDir string) *formModel {
@@ -92,7 +255,7 @@ func newFormModel(actionsDir string) *formModel {
 		values: map[string]string{
 			"name": "", "kind": "routine", "directory": "~", "enabled": "false",
 			"prompt": "",
-			"cli":    "claude", "model": "", "permission_mode": "default",
+			"cli":    "claude", "model": "", "provider": "", "thinking": "", "permission_mode": "default",
 			"auto_close": "false", "watch_minutes": "240",
 			"command": "", "timeout_minutes": "30", "defer_retry_minutes": "0",
 			"interval_minutes": "30", "wh_days": "", "start_hour": "", "end_hour": "",
@@ -123,6 +286,7 @@ func newFormModelForAction(a *Action, actionsDir string) *formModel {
 	v["prompt"] = a.Prompt
 	v["cli"] = a.CLI
 	v["model"] = a.Model
+	v["thinking"] = a.Thinking
 	v["permission_mode"] = a.PermissionMode
 	v["auto_close"] = fmt.Sprintf("%t", a.AutoClose)
 	v["watch_minutes"] = strconv.Itoa(a.WatchMinutes)
@@ -180,12 +344,6 @@ func (f *formModel) rebuild() {
 			formField{key: "defer_retry_minutes", label: "defer retry (min)", ftype: ftInt, help: "exit 75 = deferred; retry for this long (0 = record and stop)"},
 		)
 	} else {
-		// The model picker is a labelled list of known ids for claude, with a
-		// custom escape; other CLIs keep the free-text field.
-		model := formField{key: "model", label: "model", ftype: ftText, help: "optional; blank = the CLI's default"}
-		if f.values["cli"] == "claude" {
-			model = formField{key: "model", label: "model", ftype: ftChoice, choices: claudeModelChoices, custom: true, help: "‹ › to pick; cycle to custom… to type any id"}
-		}
 		// pi has no permission flags, so the field is pinned to default.
 		permissions := formField{key: "permission_mode", label: "permissions", ftype: ftEnum, options: []string{"default", "auto", "skip"}, help: "skip = no permission prompts, unattended — use with care"}
 		if f.values["cli"] == "pi" {
@@ -195,7 +353,9 @@ func (f *formModel) rebuild() {
 		fields = append(fields,
 			formField{key: "prompt", label: "prompt", ftype: ftText, help: "what the agent session should do"},
 			formField{key: "cli", label: "cli", ftype: ftEnum, options: []string{"claude", "codex", "pi"}},
-			model,
+		)
+		fields = append(fields, f.modelFields()...)
+		fields = append(fields,
 			permissions,
 			formField{key: "auto_close", label: "auto close", ftype: ftBool, help: "close the workspace when the run completes"},
 			formField{key: "watch_minutes", label: "watch (min)", ftype: ftInt},
@@ -381,6 +541,11 @@ func (f *formModel) cycle(delta int) {
 	fd := f.fields[f.cursor]
 	if fd.ftype == ftChoice {
 		f.cycleChoice(fd, delta)
+		if fd.key == "provider" {
+			// The old model belongs to the previous provider; drop to that
+			// provider's default rather than carry a mismatched id.
+			f.values["model"] = ""
+		}
 		f.err = ""
 		f.rebuild()
 		return
@@ -547,6 +712,9 @@ func (f *formModel) buildAction() (*Action, error) {
 		a.Prompt = v["prompt"]
 		a.CLI = v["cli"]
 		a.Model = v["model"]
+		if a.CLI == "pi" {
+			a.Thinking = v["thinking"]
+		}
 		a.PermissionMode = v["permission_mode"]
 		a.AutoClose = v["auto_close"] == "true"
 		if a.WatchMinutes, err = intVal("watch_minutes", "watch"); err != nil {
@@ -653,6 +821,9 @@ func writeActionFile(path string, a *Action) error {
 		fmt.Fprintf(&b, "cli = %q\n", a.CLI)
 		if a.Model != "" {
 			fmt.Fprintf(&b, "model = %q\n", a.Model)
+		}
+		if a.Thinking != "" {
+			fmt.Fprintf(&b, "thinking = %q\n", a.Thinking)
 		}
 		fmt.Fprintf(&b, "permission_mode = %q\n", a.PermissionMode)
 		fmt.Fprintf(&b, "auto_close = %t\n", a.AutoClose)

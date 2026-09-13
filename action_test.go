@@ -284,6 +284,71 @@ func TestValidateAppendSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestAgentCommandThinking(t *testing.T) {
+	a := &Action{Kind: KindHeartbeat, CLI: "pi", PermissionMode: "default",
+		Prompt: "work the queue", Model: "gpt-6-astra", Thinking: "high"}
+	got, err := a.AgentCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "pi --model 'gpt-6-astra' --thinking 'high' 'work the queue'"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	// --thinking is pi-only, so a stray value on another CLI is not emitted.
+	a = &Action{Kind: KindHeartbeat, CLI: "claude", PermissionMode: "default",
+		Prompt: "hi", Thinking: "high"}
+	if got, _ = a.AgentCommand(); got != "claude 'hi'" {
+		t.Errorf("thinking must not reach a non-pi command line: %q", got)
+	}
+}
+
+func TestValidateThinking(t *testing.T) {
+	ok := &Action{Name: "n", Kind: KindHeartbeat, Directory: "~/x", Prompt: "hi",
+		CLI: "pi", Thinking: "medium"}
+	ok.applyDefaults()
+	if err := ok.validate(); err != nil {
+		t.Errorf("pi with a valid thinking level should validate: %v", err)
+	}
+
+	bad := []*Action{
+		{Name: "n", Kind: KindHeartbeat, Directory: "~/x", Prompt: "hi", CLI: "pi", Thinking: "ultra"},
+		{Name: "n", Kind: KindHeartbeat, Directory: "~/x", Prompt: "hi", CLI: "claude", Thinking: "high"},
+		{Name: "n", Kind: KindScript, Directory: "~/x", Command: "./run.sh", Thinking: "high"},
+	}
+	for i, a := range bad {
+		a.applyDefaults()
+		if err := a.validate(); err == nil {
+			t.Errorf("case %d: expected thinking to be rejected", i)
+		}
+	}
+}
+
+func TestParsePiModels(t *testing.T) {
+	out := `provider      model                          context  max-out  thinking  images
+openai-codex  gpt-6-astra                    272K     128K     yes       yes
+llamacpp      gemma-26b-q6-262k-breadth      262.1K   32.8K    no        no
+
+short line
+`
+	got := parsePiModels(out)
+	if len(got) != 2 {
+		t.Fatalf("want 2 models, got %d (%+v)", len(got), got)
+	}
+	if got[0] != (piModel{provider: "openai-codex", id: "gpt-6-astra", thinking: true}) {
+		t.Errorf("row 0: %+v", got[0])
+	}
+	if got[1] != (piModel{provider: "llamacpp", id: "gemma-26b-q6-262k-breadth", thinking: false}) {
+		t.Errorf("row 1: %+v", got[1])
+	}
+	if p := piProviders(got); len(p) != 2 || p[0] != "openai-codex" || p[1] != "llamacpp" {
+		t.Errorf("providers: %v", p)
+	}
+	if providerOf(got, "gpt-6-astra") != "openai-codex" {
+		t.Errorf("providerOf lookup failed")
+	}
+}
+
 func TestContractPath(t *testing.T) {
 	t.Setenv("HOME", "/home/shep")
 	cases := map[string]string{

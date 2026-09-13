@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-13
+
+### Added
+
+- **A discovered model picker for `pi` actions, and a `thinking` level.** When
+  `cli = "pi"`, the board's new-action form asks pi for its live catalog
+  (`pi --list-models`, run against the action's own `PI_CODING_AGENT_DIR` when
+  it sets one) and offers a `provider` filter, a `model` picker showing that
+  provider's real models, and a `thinking` field. So the choices are the models
+  and providers that machine actually has, not a fixed table; the `custom…` step
+  still types any id, and if pi cannot be reached the field degrades to free
+  text. `cli = "claude"` keeps its curated preset list and `codex` its free-text
+  id, since neither CLI exposes a comparable catalog.
+- **`thinking = "..."` for `pi` agent actions**, one of `off`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max`, passed as pi's `--thinking` flag to set the
+  run's reasoning level. pi only: validation rejects it for `claude`/`codex` and
+  on script actions. Blank leaves the model's own default.
+
 ## [0.8.1] - 2026-09-12
 
 ### Added

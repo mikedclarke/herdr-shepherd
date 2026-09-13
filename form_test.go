@@ -54,6 +54,80 @@ func TestFormFieldsFollowKind(t *testing.T) {
 	}
 }
 
+func fieldByKey(f *formModel, key string) *formField {
+	for i := range f.fields {
+		if f.fields[i].key == key {
+			return &f.fields[i]
+		}
+	}
+	return nil
+}
+
+func TestFormPiModelPicker(t *testing.T) {
+	f := newFormModel(t.TempDir())
+	// Inject a catalog so the form never shells out to pi in a test.
+	f.piDiscovered = true
+	f.piModels = []piModel{
+		{provider: "openai-codex", id: "gpt-6-astra", thinking: true},
+		{provider: "openai-codex", id: "gpt-5.6-terra", thinking: true},
+		{provider: "llamacpp", id: "qwen3.8-27b", thinking: false},
+	}
+	f.values["cli"] = "pi"
+	f.rebuild()
+	for _, want := range []string{"provider", "model", "thinking"} {
+		if !contains(fieldKeys(f), want) {
+			t.Errorf("pi form missing %q: %v", want, fieldKeys(f))
+		}
+	}
+	if f.values["provider"] != "openai-codex" {
+		t.Errorf("provider should default to the first discovered: %q", f.values["provider"])
+	}
+	// The model picker filters to the selected provider (default row + 2 codex ids).
+	if m := fieldByKey(f, "model"); m == nil || len(m.choices) != 3 {
+		t.Errorf("model choices should filter to the provider: %+v", m)
+	}
+	// Switching provider filters the list and drops the stale model.
+	f.values["model"] = "gpt-6-astra"
+	f.values["provider"] = "llamacpp"
+	f.values["model"] = ""
+	f.rebuild()
+	if m := fieldByKey(f, "model"); m == nil || len(m.choices) != 2 {
+		t.Errorf("llamacpp should show default + 1 model: %+v", m)
+	}
+
+	// A chosen model and thinking level round-trip through buildAction.
+	f.values["provider"] = "openai-codex"
+	f.rebuild()
+	f.values["name"] = "night-model"
+	f.values["prompt"] = "do the thing"
+	f.values["model"] = "gpt-6-astra"
+	f.values["thinking"] = "high"
+	a, err := f.buildAction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Model != "gpt-6-astra" || a.Thinking != "high" {
+		t.Errorf("model/thinking not carried: %+v", a)
+	}
+}
+
+func TestFormPiModelDiscoveryFallback(t *testing.T) {
+	f := newFormModel(t.TempDir())
+	f.piDiscovered = true // empty catalog, as after a failed discovery
+	f.values["cli"] = "pi"
+	f.rebuild()
+	m := fieldByKey(f, "model")
+	if m == nil || m.ftype != ftText {
+		t.Errorf("with no catalog the model field should be free text: %+v", m)
+	}
+	if !contains(fieldKeys(f), "thinking") {
+		t.Errorf("thinking should still be offered: %v", fieldKeys(f))
+	}
+	if contains(fieldKeys(f), "provider") {
+		t.Errorf("no provider picker without a catalog: %v", fieldKeys(f))
+	}
+}
+
 func TestFormPresetFieldsFollowPreset(t *testing.T) {
 	f := newFormModel(t.TempDir())
 	f.values["preset"] = "cron"
