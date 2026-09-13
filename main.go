@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.9.0"
+const version = "0.8.3"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>
