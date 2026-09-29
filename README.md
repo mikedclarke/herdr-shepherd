@@ -1,7 +1,7 @@
 # herdr-shepherd
 
 [![release](https://img.shields.io/github/v/release/mikedclarke/herdr-shepherd)](https://github.com/mikedclarke/herdr-shepherd/releases)
-[![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.7.0-blue)](https://herdr.dev)
+[![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.8.0-blue)](https://herdr.dev)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Shepherd is a [herdr](https://herdr.dev) plugin that runs your coding agents on a schedule: an inbox triage every hour, a morning digest at six, a repo sync overnight. Every run opens as a real session in the herd, a tab in one `scheduled` workspace, where you can watch it work, catch it when it blocks, and review what it did.
@@ -20,7 +20,7 @@ Agent runs use herdr's native agent-state detection (working / blocked / done / 
 
 ## Install
 
-Requires herdr ≥ 0.7.0 on Linux or macOS. Shepherd is POSIX-only (unix sockets, process groups, and kernel file locks), so there is no Windows build.
+Requires herdr ≥ 0.8.0 on Linux or macOS. Shepherd is POSIX-only (unix sockets, process groups, and kernel file locks), so there is no Windows build.
 
 ```bash
 herdr plugin install mikedclarke/herdr-shepherd

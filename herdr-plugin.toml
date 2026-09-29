@@ -2,8 +2,8 @@ id = "mikedclarke.herdr-shepherd"
 name = "Shepherd"
 # Keep in sync with `version` in main.go.
 version = "0.9.0"
-min_herdr_version = "0.7.0"
-description = "Scheduled agent sessions: heartbeats, cron routines, and scripts, launched as visible herdr workspaces."
+min_herdr_version = "0.8.0"
+description = "Scheduled agent sessions: heartbeats, cron routines, and scripts, launched as visible herdr sessions, one tab per run."
 platforms = ["linux", "macos"]
 
 [[build]]

@@ -17,6 +17,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not be submitted, close the run's tab only; herdr closes the workspace with
   its last tab. Run records, the board and `run` name the tab id where they
   named the workspace id.
+- **Requires herdr 0.8.0 or later** (was 0.7.0). Closing a run's tab relies on
+  herdr closing a workspace together with its last tab through the API, which
+  herdr 0.7.x refuses.
+
+This changes what you see: the sidebar holds one `scheduled` entry instead of
+a `Shepherd · <action>` workspace per run, and a run record's `detail` reads
+`tab <id>` where it read `workspace <id>`. Anything that matched on either
+needs updating.
 
 ## [0.8.3] - 2026-09-13
 
