@@ -357,7 +357,7 @@ func (f *formModel) rebuild() {
 		fields = append(fields, f.modelFields()...)
 		fields = append(fields,
 			permissions,
-			formField{key: "auto_close", label: "auto close", ftype: ftBool, help: "close the workspace when the run completes"},
+			formField{key: "auto_close", label: "auto close", ftype: ftBool, help: "close the run's tab when the run completes"},
 			formField{key: "watch_minutes", label: "watch (min)", ftype: ftInt},
 		)
 	}

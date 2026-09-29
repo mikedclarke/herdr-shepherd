@@ -349,18 +349,18 @@ func (m *boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case agentStartedMsg:
 		// The run itself is unwatched by design, so the lock only covers the
-		// launch: it stops a double press opening two workspaces.
+		// launch: it stops a double press opening two tabs.
 		delete(m.running, msg.name)
 		m.releaseRun(msg.name)
 		switch {
 		case msg.err != nil:
 			m.note(styleError.Render(fmt.Sprintf("%s: %v", msg.name, msg.err)))
 		case msg.logErr != nil:
-			m.note(styleError.Render(fmt.Sprintf("%s started in workspace %s; run log: %v", msg.name, msg.ws, msg.logErr)))
+			m.note(styleError.Render(fmt.Sprintf("%s started in tab %s; run log: %v", msg.name, msg.ws, msg.logErr)))
 		case msg.gateWarn != "":
-			m.note(styleAttn.Render(fmt.Sprintf("%s started in workspace %s; gate failed: %s", msg.name, msg.ws, firstLine(msg.gateWarn))))
+			m.note(styleAttn.Render(fmt.Sprintf("%s started in tab %s; gate failed: %s", msg.name, msg.ws, firstLine(msg.gateWarn))))
 		default:
-			m.note(fmt.Sprintf("%s started in workspace %s", msg.name, msg.ws))
+			m.note(fmt.Sprintf("%s started in tab %s", msg.name, msg.ws))
 		}
 		return m, nil
 	case agentSkippedMsg:

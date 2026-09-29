@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ type scriptedHerdr struct {
 	notices      []string
 	closed       []string
 	env          map[string]string
+	spaces       []workspaceInfo
+	tabs         []string
+	renamed      map[string]string
 }
 
 type waitStep struct {
@@ -29,21 +33,61 @@ type waitStep struct {
 	err   error
 }
 
-func (f *scriptedHerdr) workspaceCreate(cwd, label string, env map[string]string) (string, string, error) {
+func (f *scriptedHerdr) workspaceList() ([]workspaceInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return append([]workspaceInfo(nil), f.spaces...), nil
+}
+
+// workspaceCreate opens ws1 labelled as asked; its root tab is ws1:t1.
+func (f *scriptedHerdr) workspaceCreate(cwd, label string, env map[string]string) (string, string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return "", "", "", f.createErr
+	}
+	f.env = env
+	f.spaces = append(f.spaces, workspaceInfo{WorkspaceID: "ws1", Label: label, Number: len(f.spaces) + 1})
+	f.tabs = append(f.tabs, "ws1:t1")
+	return "ws1", "ws1:t1", "p1", nil
+}
+
+func (f *scriptedHerdr) tabCreate(workspaceID, cwd, label string, env map[string]string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil {
 		return "", "", f.createErr
 	}
 	f.env = env
-	return "ws1", "p1", nil
+	tab := fmt.Sprintf("%s:t%d", workspaceID, len(f.tabs)+2)
+	f.tabs = append(f.tabs, tab)
+	f.renamed = mapSet(f.renamed, tab, label)
+	return tab, "p1", nil
 }
 
-func (f *scriptedHerdr) workspaceClose(workspaceID string) error {
+func (f *scriptedHerdr) tabRename(tabID, label string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.closed = append(f.closed, workspaceID)
+	f.renamed = mapSet(f.renamed, tabID, label)
 	return nil
+}
+
+func (f *scriptedHerdr) tabClose(tabID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = append(f.closed, tabID)
+	return nil
+}
+
+func mapSet(m map[string]string, k, v string) map[string]string {
+	if m == nil {
+		m = map[string]string{}
+	}
+	m[k] = v
+	return m
 }
 
 func (f *scriptedHerdr) runCommand(paneID, command string) error {
@@ -171,7 +215,7 @@ func TestRunAgentBlockedNotifiesThenCompletes(t *testing.T) {
 	}}
 	d := agentTestDaemon(t, fake)
 	status, detail, _ := d.runAgent(watchedAction(), "")
-	if status != "attention" || detail != "completed after needing attention; workspace ws1" {
+	if status != "attention" || detail != "completed after needing attention; tab ws1:t1" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
 	if _, _, notices, _ := fake.counts(); notices != 1 {
@@ -193,7 +237,7 @@ func TestRunAgentTransientIdleKeepsWatching(t *testing.T) {
 	a.AutoClose = true
 	d := agentTestDaemon(t, fake)
 	status, detail, _ := d.runAgent(a, "")
-	if status != "completed" || detail != "session finished; closed; workspace ws1" {
+	if status != "completed" || detail != "session finished; closed; tab ws1:t1" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
 	left, _, _, closed := fake.counts()
@@ -231,15 +275,15 @@ func TestRunAgentWorkspaceCreateFailureIsRetryable(t *testing.T) {
 
 func TestRunAgentSubmitFailureClosesWorkspace(t *testing.T) {
 	// Nothing was launched, but a pane that will not take input needs a
-	// person; retrying it every tick would open a workspace each time.
+	// person; retrying it every tick would open a tab each time.
 	fake := &scriptedHerdr{runErr: errors.New("pane busy")}
 	d := agentTestDaemon(t, fake)
 	status, detail, startFailed := d.runAgent(watchedAction(), "")
 	if status != "attention" || startFailed {
 		t.Fatalf("got status=%q startFailed=%v detail=%q", status, startFailed, detail)
 	}
-	if len(fake.closed) != 1 || fake.closed[0] != "ws1" {
-		t.Fatalf("failed submit must close the workspace, closed=%v", fake.closed)
+	if len(fake.closed) != 1 || fake.closed[0] != "ws1:t1" {
+		t.Fatalf("failed submit must close the tab, closed=%v", fake.closed)
 	}
 }
 
@@ -303,7 +347,7 @@ func TestRunAgentExitedAgentNeedsAttention(t *testing.T) {
 	}
 	d := agentTestDaemon(t, fake)
 	status, detail, _ := d.runAgent(watchedAction(), "")
-	if status != "attention" || detail != "agent exited; workspace ws1" {
+	if status != "attention" || detail != "agent exited; tab ws1:t1" {
 		t.Fatalf("got status=%q detail=%q", status, detail)
 	}
 }
@@ -313,7 +357,7 @@ func TestRunAgentLogsStartedRecord(t *testing.T) {
 	d := agentTestDaemon(t, fake)
 	d.runAgent(watchedAction(), "")
 	recs := readRunLog(t, d.paths.RunLogFile())
-	if len(recs) != 1 || recs[0].Status != "started" || recs[0].Detail != "workspace ws1" {
+	if len(recs) != 1 || recs[0].Status != "started" || recs[0].Detail != "tab ws1:t1" {
 		t.Fatalf("expected one started record naming the workspace, got %+v", recs)
 	}
 	if recs[0].Trigger != "" {

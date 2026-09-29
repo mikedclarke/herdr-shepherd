@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-29
+
+### Changed
+
+- **Agent runs open as tabs in one `scheduled` workspace** instead of a
+  workspace each. A run's tab is labelled `<action> <YYYY-MM-DD HH:MM>`. The
+  workspace is found by its exact label (the lowest-numbered when several
+  carry it) or created, and a new workspace's first tab is used for the run,
+  so no empty shell tab is left. `auto_close`, and a launch whose command could
+  not be submitted, close the run's tab only; herdr closes the workspace with
+  its last tab. Run records, the board and `run` name the tab id where they
+  named the workspace id.
+
 ## [0.8.3] - 2026-09-13
 
 ### Added

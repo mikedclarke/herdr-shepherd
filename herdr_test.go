@@ -98,13 +98,44 @@ func TestClientPaneExistsSeparatesMissingFromUnreachable(t *testing.T) {
 	}
 }
 
+// The replies below are trimmed from a live herdr 0.9.1 server.
 func TestClientWorkspaceCreateParsesIDs(t *testing.T) {
 	c := fakeHerdr(t, map[string]string{
-		"workspace.create": `{"id":"x","result":{"workspace":{"workspace_id":"w9"},"root_pane":{"pane_id":"w9:p1"}}}`,
+		"workspace.create": `{"id":"x","result":{"type":"workspace_created","workspace":{"workspace_id":"w9","label":"scheduled","number":4},` +
+			`"tab":{"tab_id":"w9:t1","workspace_id":"w9","label":"1","number":1},"root_pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}`,
 	})
-	ws, pane, err := c.workspaceCreate("/tmp", "Shepherd · test", map[string]string{"SHEPHERD_ACTION": "test"})
-	if err != nil || ws != "w9" || pane != "w9:p1" {
-		t.Errorf("got %q %q %v", ws, pane, err)
+	ws, tab, pane, err := c.workspaceCreate("/tmp", "scheduled", map[string]string{"SHEPHERD_ACTION": "test"})
+	if err != nil || ws != "w9" || tab != "w9:t1" || pane != "w9:p1" {
+		t.Errorf("got %q %q %q %v", ws, tab, pane, err)
+	}
+}
+
+func TestClientTabCallsParseIDs(t *testing.T) {
+	c := fakeHerdr(t, map[string]string{
+		"workspace.list": `{"id":"x","result":{"type":"workspace_list","workspaces":[{"workspace_id":"wK8","number":2,"label":"main","tab_count":3},` +
+			`{"workspace_id":"wKG","number":5,"label":"scheduled","tab_count":1}]}}`,
+		"tab.create": `{"id":"x","result":{"type":"tab_created","tab":{"tab_id":"wKG:t2","workspace_id":"wKG","number":2,"label":"probe-tab"},` +
+			`"root_pane":{"pane_id":"wKG:p2","workspace_id":"wKG","tab_id":"wKG:t2"}}}`,
+		"tab.rename": `{"id":"x","result":{"type":"tab_info","tab":{"tab_id":"wKG:t2","label":"renamed"}}}`,
+		"tab.close":  `{"id":"x","result":{"type":"ok"}}`,
+	})
+	spaces, err := c.workspaceList()
+	if err != nil || len(spaces) != 2 || spaces[1] != (workspaceInfo{WorkspaceID: "wKG", Label: "scheduled", Number: 5}) {
+		t.Fatalf("got %v %v", spaces, err)
+	}
+	tab, pane, err := c.tabCreate("wKG", "/tmp", "probe-tab", map[string]string{"SHEPHERD_ACTION": "test"})
+	if err != nil || tab != "wKG:t2" || pane != "wKG:p2" {
+		t.Errorf("got %q %q %v", tab, pane, err)
+	}
+	if err := c.tabRename("wKG:t2", "renamed"); err != nil {
+		t.Error(err)
+	}
+	if err := c.tabClose("wKG:t2"); err != nil {
+		t.Error(err)
+	}
+	gone := fakeHerdr(t, map[string]string{"tab.close": `{"id":"x","error":{"code":"tab_not_found","message":"tab wKG:t2 not found"}}`})
+	if err := gone.tabClose("wKG:t2"); !hasCode(err, "tab_not_found") {
+		t.Errorf("got %v", err)
 	}
 }
 

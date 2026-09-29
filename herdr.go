@@ -83,33 +83,72 @@ func (c *herdrClient) callWithin(deadline time.Duration, method string, params m
 	return nil
 }
 
-// workspaceCreate opens an unfocused workspace at cwd and returns its id plus
-// the root pane's id.
-func (c *herdrClient) workspaceCreate(cwd, label string, env map[string]string) (workspaceID, paneID string, err error) {
+// workspaceInfo is the part of a workspace listing the launch needs.
+type workspaceInfo struct {
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	Number      int    `json:"number"`
+}
+
+func (c *herdrClient) workspaceList() ([]workspaceInfo, error) {
 	var out struct {
-		Workspace struct {
-			WorkspaceID string `json:"workspace_id"`
-		} `json:"workspace"`
-		RootPane struct {
-			PaneID string `json:"pane_id"`
-		} `json:"root_pane"`
+		Workspaces []workspaceInfo `json:"workspaces"`
 	}
-	params := map[string]any{
-		"cwd":   cwd,
-		"label": label,
-		"focus": false,
+	if err := c.call("workspace.list", map[string]any{}, &out); err != nil {
+		return nil, err
 	}
+	return out.Workspaces, nil
+}
+
+// createdTab is the tab and root pane that workspace.create and tab.create
+// both return.
+type createdTab struct {
+	Workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	} `json:"workspace"`
+	Tab struct {
+		TabID string `json:"tab_id"`
+	} `json:"tab"`
+	RootPane struct {
+		PaneID string `json:"pane_id"`
+	} `json:"root_pane"`
+}
+
+// workspaceCreate opens an unfocused workspace at cwd and returns its id plus
+// its root tab's and root pane's ids. env reaches the root pane only.
+func (c *herdrClient) workspaceCreate(cwd, label string, env map[string]string) (workspaceID, tabID, paneID string, err error) {
+	params := map[string]any{"cwd": cwd, "label": label, "focus": false}
 	if len(env) > 0 {
 		params["env"] = env
 	}
+	var out createdTab
 	if err := c.call("workspace.create", params, &out); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return out.Workspace.WorkspaceID, out.RootPane.PaneID, nil
+	return out.Workspace.WorkspaceID, out.Tab.TabID, out.RootPane.PaneID, nil
 }
 
-func (c *herdrClient) workspaceClose(workspaceID string) error {
-	return c.call("workspace.close", map[string]any{"workspace_id": workspaceID}, nil)
+// tabCreate opens an unfocused tab in a workspace and returns its id plus its
+// root pane's id. env reaches that tab's pane only.
+func (c *herdrClient) tabCreate(workspaceID, cwd, label string, env map[string]string) (tabID, paneID string, err error) {
+	params := map[string]any{"workspace_id": workspaceID, "cwd": cwd, "label": label, "focus": false}
+	if len(env) > 0 {
+		params["env"] = env
+	}
+	var out createdTab
+	if err := c.call("tab.create", params, &out); err != nil {
+		return "", "", err
+	}
+	return out.Tab.TabID, out.RootPane.PaneID, nil
+}
+
+func (c *herdrClient) tabRename(tabID, label string) error {
+	return c.call("tab.rename", map[string]any{"tab_id": tabID, "label": label}, nil)
+}
+
+// tabClose closes one tab; herdr closes a workspace together with its last tab.
+func (c *herdrClient) tabClose(tabID string) error {
+	return c.call("tab.close", map[string]any{"tab_id": tabID}, nil)
 }
 
 // runCommand submits a shell command in a pane: the command as pasted text plus

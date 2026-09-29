@@ -57,13 +57,13 @@ type Action struct {
 	// DeferRetryMinutes is how long a script that exits 75 (deferred) keeps
 	// being retried on subsequent ticks; 0 means record the deferral and stop.
 	DeferRetryMinutes int `toml:"defer_retry_minutes"`
-	// Gate is a command run before an agent action's workspace opens. Exit 0
+	// Gate is a command run before an agent action's tab opens. Exit 0
 	// runs the agent, exit 75 skips the occurrence, anything else runs the
 	// agent anyway (a broken gate must not silence a schedule).
 	Gate               string `toml:"gate"`
 	GateTimeoutMinutes int    `toml:"gate_timeout_minutes"`
 	// Env is extra environment for the run: an agent pane gets it through the
-	// workspace herdr opens, a script or gate through its child process.
+	// tab herdr opens, a script or gate through its child process.
 	Env map[string]string `toml:"env"`
 
 	Heartbeat HeartbeatSpec `toml:"heartbeat"`

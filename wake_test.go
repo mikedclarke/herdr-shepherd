@@ -503,7 +503,7 @@ func TestWakeAtFlagParses(t *testing.T) {
 
 func TestLaunchAgentWorkspaceInjectsTrigger(t *testing.T) {
 	fake := &scriptedHerdr{}
-	if _, _, err := launchAgentWorkspace(fake, watchedAction(), 0, triggerWake); err != nil {
+	if _, _, err := launchAgentTab(fake, watchedAction(), 0, triggerWake, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if fake.env["SHEPHERD_TRIGGER"] != triggerWake || fake.env["SHEPHERD_ACTION"] != "nightly-report" {

@@ -236,7 +236,7 @@ func cmdStatus(notify bool) error {
 }
 
 // cmdRun fires one action immediately. Scripts run synchronously; agent actions
-// are started in a workspace and left to the user (no watcher, no auto-close —
+// are started in a tab and left to the user (no watcher, no auto-close —
 // a manual run means someone is present). Manual runs do not consult or update
 // the daemon's schedule.
 func cmdRun(name string) error {
@@ -307,31 +307,31 @@ func cmdRun(name string) error {
 
 	// The lock goes with this process: a manual agent run is handed to the
 	// user once its session is up, and nobody watches it after that.
-	wsID, err := startAgentRun(action)
+	tabID, err := startAgentRun(action)
 	if err != nil {
 		return err
 	}
-	if lerr := recordManualStart(action, wsID); lerr != nil {
+	if lerr := recordManualStart(action, tabID); lerr != nil {
 		fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
 	}
-	fmt.Printf("Started %s in workspace %s\n", action.Name, wsID)
+	fmt.Printf("Started %s in tab %s\n", action.Name, tabID)
 	return nil
 }
 
-// startAgentRun opens a manual run's workspace and submits the agent command.
+// startAgentRun opens a manual run's tab and submits the agent command.
 // Shared by `run` and the board; both keep manual-run semantics (no watcher,
 // no auto-close, no schedule coordination). It must not write to the
 // terminal: the board calls it from inside the TUI's alternate screen.
-func startAgentRun(a *Action) (workspaceID string, err error) {
+func startAgentRun(a *Action) (tabID string, err error) {
 	client, err := newHerdrClient()
 	if err != nil {
 		return "", err
 	}
-	wsID, _, err := launchAgentWorkspace(client, a, shellSettle, triggerManual)
+	tabID, _, err = launchAgentTab(client, a, shellSettle, triggerManual, time.Now())
 	if err != nil {
 		return "", err
 	}
-	return wsID, nil
+	return tabID, nil
 }
 
 // cmdWake queues a wake for one action. It never takes the run lock and never
@@ -391,10 +391,10 @@ func cmdWake(name string, at time.Time) error {
 
 // recordManualStart writes the started record — the only trace a manual agent
 // run leaves. Callers report a failure their own way (stderr or status line).
-func recordManualStart(a *Action, wsID string) error {
+func recordManualStart(a *Action, tabID string) error {
 	p := resolvePaths()
 	return appendRunLog(p.RunLogFile(), runRecord{
 		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: "started",
-		Detail: "workspace " + wsID, Trigger: triggerManual,
+		Detail: "tab " + tabID, Trigger: triggerManual,
 	})
 }

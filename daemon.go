@@ -55,8 +55,11 @@ const (
 // herdrAPI is the slice of the herdr socket API the daemon uses; it exists so
 // agent-watch logic is testable against a scripted fake.
 type herdrAPI interface {
-	workspaceCreate(cwd, label string, env map[string]string) (workspaceID, paneID string, err error)
-	workspaceClose(workspaceID string) error
+	workspaceList() ([]workspaceInfo, error)
+	workspaceCreate(cwd, label string, env map[string]string) (workspaceID, tabID, paneID string, err error)
+	tabCreate(workspaceID, cwd, label string, env map[string]string) (tabID, paneID string, err error)
+	tabRename(tabID, label string) error
+	tabClose(tabID string) error
 	runCommand(paneID, command string) error
 	agentWait(target string, until []string, timeoutMS int) (string, error)
 	paneExists(paneID string) (bool, error)
@@ -648,20 +651,20 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 	if paneTrigger == "" {
 		paneTrigger = triggerSchedule
 	}
-	wsID, paneID, err := launchAgentWorkspace(d.client, a, d.settle, paneTrigger)
+	tabID, paneID, err := launchAgentTab(d.client, a, d.settle, paneTrigger, time.Now())
 	switch {
 	case err == nil:
 	case errors.Is(err, errLaunchCreate):
 		return "error", err.Error(), true
 	case errors.Is(err, errLaunchSubmit):
-		// The workspace is already closed again. Nothing ran, but a pane that
+		// The tab is already closed again. Nothing ran, but a pane that
 		// rejects input needs a person, not another attempt.
 		return "attention", err.Error(), false
 	default:
 		return "error", err.Error(), false
 	}
 	d.appendRun(runRecord{
-		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: "started", Detail: "workspace " + wsID,
+		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: "started", Detail: "tab " + tabID,
 		Trigger: trigger,
 	})
 
@@ -683,12 +686,12 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 				state = probe
 			}
 		case isPaneNotFound(werr):
-			return "cancelled", "pane closed before the agent started; workspace " + wsID, false
+			return "cancelled", "pane closed before the agent started; tab " + tabID, false
 		case isAgentNotFound(werr):
 			time.Sleep(d.pause)
 		default:
 			// Transport errors are transient; keep waiting rather than tear
-			// down a workspace that may be running the agent perfectly well.
+			// down a tab that may be running the agent perfectly well.
 			time.Sleep(d.pause)
 		}
 		if state != "" {
@@ -702,7 +705,7 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 		}
 		if time.Now().After(startDeadline) {
 			d.notify("Shepherd: "+a.Name+" did not start", "No agent activity in its pane", "none")
-			return "attention", "agent never started working within start timeout; workspace " + wsID, false
+			return "attention", "agent never started working within start timeout; tab " + tabID, false
 		}
 	}
 
@@ -738,7 +741,7 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 		}
 		if time.Now().After(deadline) {
 			d.notify("Shepherd: "+a.Name+" still running", fmt.Sprintf("Exceeded watch window of %dm", a.WatchMinutes), "none")
-			return "attention", "watch window exceeded; session left open; workspace " + wsID, false
+			return "attention", "watch window exceeded; session left open; tab " + tabID, false
 		}
 		time.Sleep(d.pause)
 		state, err = d.client.agentWait(paneID, until, waitSliceMS)
@@ -755,13 +758,13 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 					continue
 				}
 				if !alive {
-					return "cancelled", "pane closed during run; workspace " + wsID, false
+					return "cancelled", "pane closed during run; tab " + tabID, false
 				}
 				// The agent process exited (crash or clean exit to shell).
 				exited = true
 				break
 			}
-			return "error", "agent wait: " + err.Error() + "; workspace " + wsID, false
+			return "error", "agent wait: " + err.Error() + "; tab " + tabID, false
 		}
 	}
 
@@ -774,13 +777,13 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 		status, detail = "completed", "session finished"
 	}
 	if a.AutoClose {
-		if cerr := d.client.workspaceClose(wsID); cerr != nil {
+		if cerr := d.client.tabClose(tabID); cerr != nil {
 			detail += "; close failed: " + cerr.Error()
 		} else {
 			detail += "; closed"
 		}
 	}
-	return status, detail + "; workspace " + wsID, false
+	return status, detail + "; tab " + tabID, false
 }
 
 // confirmIdle re-arms after a phase-2 idle. An agent between turns reports
