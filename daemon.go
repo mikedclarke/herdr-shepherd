@@ -320,6 +320,16 @@ func (d *daemon) due(a *Action, now time.Time) (bool, time.Time) {
 		if now.Before(next) {
 			return false, time.Time{}
 		}
+		// Stamp the latest occurrence already past, not the first: a
+		// schedule shorter than the grace window would otherwise run every
+		// occurrence in the window, one per tick.
+		for {
+			after, err := nextOccurrence(a, next)
+			if err != nil || now.Before(after) {
+				break
+			}
+			next = after
+		}
 		return true, next
 	}
 	return false, time.Time{}

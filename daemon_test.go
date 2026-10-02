@@ -111,6 +111,38 @@ func TestDueRoutineNewActionFiresNextOccurrence(t *testing.T) {
 	}
 }
 
+func TestDueFrequentCronCatchesUpOnce(t *testing.T) {
+	// A two-minute cron with no recorded run has five occurrences inside the
+	// grace window. Catch-up runs the latest one once; the following ticks
+	// wait for the next occurrence instead of walking the rest.
+	d := testDaemon(t)
+	a := &Action{
+		Name: "frequent", Kind: KindScript, Directory: "/tmp", Command: "true",
+		Routine: RoutineSpec{Preset: "cron", Cron: "*/2 * * * *"},
+	}
+	start := mustTime(t, "2026-07-27 20:31").Add(21 * time.Second)
+	fires := 0
+	for i := 0; i < 8; i++ {
+		now := start.Add(time.Duration(i) * 30 * time.Second)
+		fire, stamp := d.due(a, now)
+		if !fire {
+			continue
+		}
+		fires++
+		if i == 0 {
+			if want := mustTime(t, "2026-07-27 20:30"); !stamp.Equal(want) {
+				t.Errorf("catch-up should stamp the latest past occurrence %s, got %s", want, stamp)
+			}
+		}
+		d.state.setLastRun(a.Name, stamp)
+	}
+	// Ticks run 20:31:21 to 20:34:51: the catch-up for 20:30, then 20:32
+	// and 20:34 on schedule.
+	if fires != 3 {
+		t.Errorf("want one catch-up run then the schedule (3 fires), got %d", fires)
+	}
+}
+
 func TestDueClockStepBackwards(t *testing.T) {
 	now := mustTime(t, "2026-07-27 06:16")
 	d := testDaemon(t)
