@@ -302,20 +302,15 @@ func (d *daemon) due(a *Action, now time.Time) (bool, time.Time) {
 		// Clamping the anchor to the grace window is what drops missed
 		// occurrences: a daemon that was asleep or stopped resumes at the
 		// next one instead of walking every occurrence it was away for.
+		// The scan runs in now's zone: a stamp read back from the state file
+		// can carry a fixed offset, which would never see a clock change.
 		anchor := now.Add(-catchUpGrace)
 		if last.After(anchor) {
-			anchor = last
+			anchor = last.In(now.Location())
 		}
 		next, err := nextOccurrence(a, anchor)
 		if err != nil {
 			return false, time.Time{}
-		}
-		if !last.IsZero() && sameWallClock(next, last) {
-			// DST fall-back repeats an hour; this occurrence already ran.
-			next, err = nextOccurrence(a, next)
-			if err != nil {
-				return false, time.Time{}
-			}
 		}
 		if now.Before(next) {
 			return false, time.Time{}

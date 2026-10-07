@@ -122,13 +122,21 @@ func nextOccurrence(a *Action, anchor time.Time) (time.Time, error) {
 	return a.Routine.NextRoutine(anchor)
 }
 
-// sameWallClock reports whether two instants show the same local date, hour,
-// and minute. On a DST fall-back day the minute scan meets the repeated hour
-// twice; comparing wall clocks lets the caller drop the second occurrence.
-func sameWallClock(a, b time.Time) bool {
-	ay, am, ad := a.Date()
-	by, bm, bd := b.Date()
-	return ay == by && am == bm && ad == bd && a.Hour() == b.Hour() && a.Minute() == b.Minute()
+// repeatedWallClock reports whether t falls in the second pass of a local hour
+// the clocks went back over: its wall clock already occurred before the change.
+// A schedule keyed on wall clocks matches only the first pass, so each local
+// time runs once however many times the clock shows it.
+func repeatedWallClock(t time.Time) bool {
+	start, _ := t.ZoneBounds()
+	if start.IsZero() {
+		return false
+	}
+	_, offset := t.Zone()
+	_, before := start.Add(-time.Second).Zone()
+	if before <= offset {
+		return false
+	}
+	return t.Before(start.Add(time.Duration(before-offset) * time.Second))
 }
 
 func uniqueSorted(vals []int, lo, hi int) []int {
@@ -270,7 +278,7 @@ func (c *cronSchedule) Next(t time.Time) (time.Time, error) {
 			candidate = time.Date(y, m, d+1, 0, 0, 0, 0, candidate.Location())
 			continue
 		}
-		if c.matches(candidate) {
+		if c.matches(candidate) && !repeatedWallClock(candidate) {
 			return candidate, nil
 		}
 		candidate = candidate.Add(time.Minute)

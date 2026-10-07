@@ -14,6 +14,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   window ran every occurrence in that window, one per tick (a two-minute cron
   ran seven times in three minutes). Catch-up now runs the latest missed
   occurrence once and then follows the schedule.
+- **A time inside the repeated hour runs once when the clocks go back.** The
+  fall-back guard compared each occurrence only with the last one run, so a
+  schedule with two or more times in the repeated hour (`0,30 1 * * *` in
+  `Europe/London`) ran each of them again on the second pass. Schedules now
+  match only the first pass of a repeated hour, and the scan runs in the
+  current local zone even when the last run was read back from the state file.
 
 ## [0.9.0] - 2026-09-29
 

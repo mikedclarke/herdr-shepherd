@@ -155,7 +155,7 @@ func nextRun(a *Action, last time.Time, now time.Time) time.Time {
 	if !a.IsEnabled() {
 		return time.Time{}
 	}
-	anchor := last
+	anchor := last.In(now.Location())
 	if a.Kind == KindHeartbeat {
 		if last.IsZero() {
 			return now
