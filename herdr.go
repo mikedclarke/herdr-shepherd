@@ -162,6 +162,27 @@ func (c *herdrClient) runCommand(paneID, command string) error {
 	}, nil)
 }
 
+// paneRead returns a pane's text from source (visible, recent or
+// recent-unwrapped), its trailing lines rows. Before herdr 0.9.0 a recent read
+// can come back empty while the output is still on screen, so an empty recent
+// read is no evidence of absence.
+func (c *herdrClient) paneRead(paneID, source string, lines int) (string, error) {
+	var out struct {
+		Read struct {
+			Text string `json:"text"`
+		} `json:"read"`
+	}
+	err := c.call("pane.read", map[string]any{
+		"pane_id": paneID,
+		"source":  source,
+		"lines":   lines,
+	}, &out)
+	if err != nil {
+		return "", err
+	}
+	return out.Read.Text, nil
+}
+
 // agentWait blocks until the agent in target reaches one of the given states.
 // It errors with code "timeout" on expiry and "agent_not_found" whenever the
 // pane currently has no detected agent — including before one starts and after

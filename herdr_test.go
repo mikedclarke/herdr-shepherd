@@ -149,6 +149,16 @@ func TestClientAgentWaitReturnsStatus(t *testing.T) {
 	}
 }
 
+func TestClientPaneReadReturnsText(t *testing.T) {
+	c := fakeHerdr(t, map[string]string{
+		"pane.read": `{"id":"x","result":{"type":"pane_read","read":{"pane_id":"p","text":"$ "}}}`,
+	})
+	text, err := c.paneRead("p", "visible", 10)
+	if err != nil || text != "$ " {
+		t.Errorf("got %q %v", text, err)
+	}
+}
+
 // A server that accepts and never replies must not pin the caller forever —
 // that would leave the action's running flag set for the daemon's lifetime.
 func TestClientDeadlineOnSilentServer(t *testing.T) {

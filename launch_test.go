@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,5 +125,20 @@ func TestPickWorkspace(t *testing.T) {
 	}
 	if got := pickWorkspace(spaces, "y"); got != "" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestMarkedCommandShowsWhetherTheShellRanIt(t *testing.T) {
+	id := newRunID()
+	cmd := markedCommand(id, "true")
+	if !strings.Contains(cmd, markerTyped(id)) || strings.Contains(cmd, markerRan(id)) {
+		t.Fatalf("the typed line must carry the typed marker only: %q", cmd)
+	}
+	out, err := exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out); got != markerRan(id)+"\n" {
+		t.Fatalf("the shell printed %q, want the ran marker", got)
 	}
 }

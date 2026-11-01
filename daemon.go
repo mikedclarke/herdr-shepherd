@@ -39,8 +39,10 @@ const (
 	shellSettle      = 1 * time.Second
 	pollPause        = 1 * time.Second
 	// A pane whose shell was not ready swallows the submitted line; the
-	// command is sent once more after this long without a detected agent.
+	// command is sent once more after this long, and only when a pane read
+	// shows the shell never got it.
 	resendAfter       = 20 * time.Second
+	startPaneLines    = 100
 	outputTailMax     = 4096
 	daemonLogMaxBytes = 5 << 20
 	// How long a signalled shutdown waits for runs that are still going. Ten
@@ -61,6 +63,7 @@ type herdrAPI interface {
 	tabRename(tabID, label string) error
 	tabClose(tabID string) error
 	runCommand(paneID, command string) error
+	paneRead(paneID, source string, lines int) (string, error)
 	agentWait(target string, until []string, timeoutMS int) (string, error)
 	paneExists(paneID string) (bool, error)
 	notify(title, body, sound string) error
@@ -652,11 +655,13 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 	if err != nil {
 		return "error", err.Error(), false
 	}
+	runID := newRunID()
+	command = markedCommand(runID, command)
 	paneTrigger := trigger
 	if paneTrigger == "" {
 		paneTrigger = triggerSchedule
 	}
-	tabID, paneID, err := launchAgentTab(d.client, a, d.settle, paneTrigger, time.Now())
+	tabID, paneID, err := launchCommandTab(d.client, a, command, d.settle, paneTrigger, time.Now())
 	switch {
 	case err == nil:
 	case errors.Is(err, errLaunchCreate):
@@ -676,9 +681,16 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 	// Phase 1: agent.wait errors with agent_not_found until herdr detects the
 	// agent, and a fresh one reports idle before its first turn registers —
 	// so only working/blocked count as started.
+	//
+	// A late start is never proof the line was lost, and a second copy typed
+	// into a live agent becomes its next instruction. So the command goes again
+	// only when herdr answered every wait with agent_not_found and the pane
+	// shows a drawn prompt with no trace of the line.
 	startDeadline := time.Now().Add(d.startTimeout)
 	resendAt := time.Now().Add(d.resend)
-	resent := false
+	mayResend, resent := true, false
+	sawAgent, sawTransport := false, false
+	paneSeen := ""
 	state := ""
 	for state == "" {
 		s, werr := d.client.agentWait(paneID, []string{"working", "blocked"}, startWaitSliceMS)
@@ -686,6 +698,7 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 		case werr == nil:
 			state = s
 		case isTimeout(werr):
+			sawAgent = true
 			// A run that finished between waits never showed working.
 			if probe, perr := d.client.agentWait(paneID, []string{"done"}, doneProbeMS); perr == nil {
 				state = probe
@@ -697,20 +710,48 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 		default:
 			// Transport errors are transient; keep waiting rather than tear
 			// down a tab that may be running the agent perfectly well.
+			sawTransport = true
 			time.Sleep(d.pause)
 		}
 		if state != "" {
 			break
 		}
-		if !resent && time.Now().After(resendAt) {
-			resent = true
-			if rerr := d.client.runCommand(paneID, command); rerr != nil {
-				log.Printf("%s: resend command: %v", a.Name, rerr)
+		if sawAgent || sawTransport {
+			mayResend = false
+		}
+		if mayResend && time.Now().After(resendAt) {
+			// The recent read catches a marker an agent's output has already
+			// pushed off the screen; joining rows undoes soft wraps.
+			text, rerr := d.client.paneRead(paneID, "visible", startPaneLines)
+			recent, recentErr := d.client.paneRead(paneID, "recent", startPaneLines)
+			flat := strings.NewReplacer("\r", "", "\n", "").Replace(text + "\n" + recent)
+			switch {
+			case rerr != nil || recentErr != nil:
+				mayResend, paneSeen = false, "the pane could not be read"
+			case strings.Contains(flat, markerRan(runID)):
+				mayResend, paneSeen = false, "the shell ran the command"
+			case strings.Contains(flat, markerTyped(runID)):
+				mayResend, paneSeen = false, "the shell has the command but has not run it"
+			case strings.TrimSpace(text) == "":
+				paneSeen = "the pane was still blank"
+			default:
+				mayResend, resent = false, true
+				paneSeen = "the shell showed a prompt without the command"
+				if serr := d.client.runCommand(paneID, command); serr != nil {
+					log.Printf("%s: resend command: %v; pane showed: %q", a.Name, serr, tailString(text, 200))
+				} else {
+					log.Printf("%s: resent command; pane showed: %q", a.Name, tailString(text, 200))
+				}
 			}
 		}
 		if time.Now().After(startDeadline) {
 			d.notify("Shepherd: "+a.Name+" did not start", "No agent activity in its pane", "none")
-			return "attention", "agent never started working within start timeout; tab " + tabID, false
+			resendNote := "command not resent"
+			if resent {
+				resendNote = "command resent once"
+			}
+			return "attention", "startup uncertain: " + startupSeen(sawAgent, sawTransport, paneSeen) +
+				"; " + resendNote + "; tab " + tabID, false
 		}
 	}
 
@@ -791,9 +832,26 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 	return status, detail + "; tab " + tabID, false
 }
 
+// startupSeen says what phase 1 saw of a run that never started working.
+func startupSeen(sawAgent, sawTransport bool, pane string) string {
+	parts := []string{"no agent was detected"}
+	if sawAgent {
+		parts[0] = "an agent was detected but never started working"
+	}
+	if sawTransport {
+		parts = append(parts, "herdr did not answer every call")
+	}
+	if pane != "" {
+		parts = append(parts, pane)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // confirmIdle re-arms after a phase-2 idle. An agent between turns reports
 // idle, so only an idle that survives the re-arm ends the watch; the done
-// probe catches a session that finished inside the re-arm window.
+// probe catches a session that finished inside the re-arm window. Only a probe
+// that times out confirms the idle; any other failure is no observation and
+// goes back to the caller.
 func (d *daemon) confirmIdle(paneID string) (string, error) {
 	s, err := d.client.agentWait(paneID, []string{"working", "blocked"}, idleConfirmMS)
 	if err == nil {
@@ -802,10 +860,15 @@ func (d *daemon) confirmIdle(paneID string) (string, error) {
 	if !isTimeout(err) {
 		return "", err
 	}
-	if probe, perr := d.client.agentWait(paneID, []string{"done"}, doneProbeMS); perr == nil {
+	probe, perr := d.client.agentWait(paneID, []string{"done"}, doneProbeMS)
+	switch {
+	case perr == nil:
 		return probe, nil
+	case isTimeout(perr):
+		return "idle", nil
+	default:
+		return "", perr
 	}
-	return "idle", nil
 }
 
 // tailBuffer keeps only the last max bytes written, so a chatty script cannot

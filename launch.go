@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -80,6 +82,11 @@ func launchAgentTab(client herdrAPI, a *Action, settle time.Duration, trigger st
 	if err != nil {
 		return "", "", err
 	}
+	return launchCommandTab(client, a, command, settle, trigger, at)
+}
+
+// launchCommandTab is launchAgentTab with the command already built.
+func launchCommandTab(client herdrAPI, a *Action, command string, settle time.Duration, trigger string, at time.Time) (tabID, paneID string, err error) {
 	env := a.EnvMap()
 	env["SHEPHERD_ACTION"] = a.Name
 	env["SHEPHERD_TRIGGER"] = trigger
@@ -95,4 +102,21 @@ func launchAgentTab(client herdrAPI, a *Action, settle time.Duration, trigger st
 		return "", "", fmt.Errorf("%w: %w", errLaunchSubmit, err)
 	}
 	return tabID, paneID, nil
+}
+
+// A watched run's command is prefixed with a marker so a pane read can tell
+// whether the shell has the line: the typed text carries \101 where the
+// output of a shell that ran it carries A.
+func markedCommand(runID, command string) string {
+	return fmt.Sprintf(`printf 'shepherd-run-\101-%%s\n' %s; %s`, runID, command)
+}
+
+func markerTyped(runID string) string { return `shepherd-run-\101-%s\n' ` + runID }
+
+func markerRan(runID string) string { return "shepherd-run-A-" + runID }
+
+func newRunID() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
