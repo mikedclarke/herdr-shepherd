@@ -20,6 +20,42 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Europe/London`) ran each of them again on the second pass. Schedules now
   match only the first pass of a repeated hour, and the scan runs in the
   current local zone even when the last run was read back from the state file.
+- **A slow agent start is no longer typed into the pane a second time.** A
+  start command was sent again after 20 seconds without a working agent,
+  whatever the reason, so a session that was merely slow to start got its own
+  command line as a second instruction. The command now carries a short
+  `printf` marker, and it is sent again only when herdr never detected an
+  agent, answered every call, and a read of the pane shows a prompt with no
+  trace of the line. A start that times out is recorded as `startup
+  uncertain`, saying what was seen. Every resend is logged with the pane's
+  text.
+- **A failed final check of an idle session is no longer recorded as
+  success.** When the last probe after a confirmed idle found no agent, no
+  pane, or no answer from herdr, the run was recorded `completed` (and closed
+  with `auto_close`). Those answers now go through the same handling as
+  anywhere else in the watch: an exited agent is `attention`, a closed pane
+  `cancelled`, and a herdr that keeps failing an `error`.
+- **A deferred script whose retry window closed unretried no longer runs
+  late.** If nothing retried the script before its `defer_retry_minutes`
+  window closed (the machine slept, or a long run held the action), the next
+  tick ran it anyway, hours outside the window. It now records
+  `deferred-expired` with the "never ran" notification instead, and runs
+  nothing.
+- **An unreadable state file is no longer treated as an empty one.** A
+  `state.json` that exists but cannot be read (permissions, an I/O error) made
+  the daemon start with no history, re-run routines that had already run, and
+  save over the file. The daemon now holds: it runs and saves nothing,
+  notifies once, and retries the file every tick until it reads. `status`,
+  `list` and the board warn that they cannot read it.
+
+### Changed
+
+- **The README describes the run lock and the shutdown wait as they behave.**
+  It promised that an action never fires while its previous run is going; an
+  agent run's lock ends with its watch window and a manual agent run's once
+  its tab opens. It also said a script still going after the shutdown wait is
+  left to finish, when it is left with no time limit and dies at its next
+  write.
 
 ## [0.9.0] - 2026-09-29
 
