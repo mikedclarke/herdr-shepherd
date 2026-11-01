@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"math"
 	"os"
@@ -125,17 +127,26 @@ func emptyState() *daemonState {
 	return &daemonState{Actions: map[string]*actionState{}}
 }
 
+// errStateUnreadable marks a state file that exists but could not be read. It
+// is not an empty state: starting from nothing would re-run every routine that
+// already ran and then save that over the file's history.
+var errStateUnreadable = errors.New("state file unreadable")
+
 // loadState is the daemon's loader: it owns the file, so a corrupt one is
-// quarantined rather than silently resetting every schedule.
-func loadState(path string) *daemonState {
+// quarantined rather than silently resetting every schedule. An unreadable
+// file is left alone and its error returned.
+func loadState(path string) (*daemonState, error) {
 	st, err := parseStateFile(path)
+	if errors.Is(err, errStateUnreadable) {
+		return nil, err
+	}
 	if err != nil {
 		if rerr := os.Rename(path, path+".corrupt"); rerr != nil {
 			log.Printf("quarantine corrupt state %s: %v", path, rerr)
 		}
-		return emptyState()
+		return emptyState(), nil
 	}
-	return st
+	return st, nil
 }
 
 // readState is the read-only loader for the CLI and the board. Renaming a file
@@ -143,7 +154,7 @@ func loadState(path string) *daemonState {
 func readState(path string) *daemonState {
 	st, err := parseStateFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unreadable state file %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "warning: cannot read state file %s, showing no history: %v\n", path, err)
 		return emptyState()
 	}
 	return st
@@ -154,8 +165,11 @@ func readState(path string) *daemonState {
 func parseStateFile(path string) (*daemonState, error) {
 	st := emptyState()
 	data, err := os.ReadFile(path)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errStateUnreadable, err)
 	}
 	if err := json.Unmarshal(data, st); err != nil {
 		return nil, err

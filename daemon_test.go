@@ -419,6 +419,98 @@ func TestTickRetriesAPendingDeferral(t *testing.T) {
 	}
 }
 
+func TestTickExpiresAStaleDeferralWithoutRunning(t *testing.T) {
+	// The retry window closed while nothing retried (the machine slept, or a
+	// long run held the lock): the late tick must not run the script.
+	d := testDaemon(t)
+	fake := d.client.(*scriptedHerdr)
+	dir := d.paths.ActionsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "ran")
+	farHour := (time.Now().Hour() + 12) % 24
+	writeAction(t, dir, "triage.toml", fmt.Sprintf("name = \"email-triage\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"touch %s\"\ndefer_retry_minutes = 1\n[schedule]\nhours = [%d]\n", marker, farHour))
+	d.mu.Lock()
+	d.deferredSince = map[string]time.Time{"email-triage": time.Now().Add(-2 * time.Minute)}
+	d.mu.Unlock()
+	d.state.setLastRun("email-triage", time.Now().Add(-time.Hour))
+
+	d.tick()
+	d.runs.Wait()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a deferral past its window must not run the script")
+	}
+	if got := d.state.lastStatus("email-triage"); got != "deferred-expired" {
+		t.Fatalf("status %q, want deferred-expired", got)
+	}
+	recs := readRunLog(t, d.paths.RunLogFile())
+	if len(recs) != 1 || recs[0].Status != "deferred-expired" {
+		t.Fatalf("expected one deferred-expired record, got %+v", recs)
+	}
+	if _, _, notices, _ := fake.counts(); notices != 1 {
+		t.Errorf("a run that never happened should notify once, got %v", fake.notices)
+	}
+	if d.deferPending("email-triage") {
+		t.Error("an expired deferral must clear the pending retry")
+	}
+}
+
+func TestTickHoldsWhileTheStateFileIsUnreadable(t *testing.T) {
+	// The stored stamp says this occurrence already ran. A daemon that took the
+	// unreadable file for an empty one would run it again and then save its
+	// near-empty state over the history.
+	d := testDaemon(t)
+	fake := d.client.(*scriptedHerdr)
+	marker := filepath.Join(t.TempDir(), "ran")
+	dueScript(t, d, "build-sync", "touch "+marker)
+	occ := time.Now().Add(-2 * time.Minute)
+	stamp := time.Date(occ.Year(), occ.Month(), occ.Day(), occ.Hour(), occ.Minute(), 0, 0, time.Local)
+	path := d.paths.StateFile()
+	unreadableState(t, path, "build-sync", stamp)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = loadState(path)
+	if err == nil {
+		t.Fatal("setup: the state file should be unreadable")
+	}
+	d.state, d.stateHeld = emptyState(), err
+
+	d.tick()
+	d.tick()
+	d.runs.Wait()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a held daemon must not run anything")
+	}
+	if recs := readRunLog(t, d.paths.RunLogFile()); len(recs) != 0 {
+		t.Fatalf("a held daemon must not record runs, got %+v", recs)
+	}
+	after, err := os.Stat(path)
+	if err != nil || !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Fatalf("a held daemon must not touch the state file: %v", err)
+	}
+	if _, _, notices, _ := fake.counts(); notices != 1 {
+		t.Fatalf("want one notice for the hold, got %v", fake.notices)
+	}
+
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.tick()
+	d.runs.Wait()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the occurrence was already consumed and must not run once the file reads")
+	}
+	if !d.state.lastRun("build-sync").Equal(stamp) {
+		t.Fatalf("the stored history should be back, got %v", d.state.lastRun("build-sync"))
+	}
+	if _, _, notices, _ := fake.counts(); notices != 1 {
+		t.Fatalf("recovering must not notify again, got %v", fake.notices)
+	}
+}
+
 func TestFireSkipsAnActionAlreadyRunning(t *testing.T) {
 	d := testDaemon(t)
 	a := scriptAction("build-sync", "echo done")

@@ -98,7 +98,11 @@ func runNight(t *testing.T, actions []*Action, start, end time.Time) map[string]
 			}
 		}
 		d.saveState()
-		d.state = loadState(d.paths.StateFile())
+		st, err := loadState(d.paths.StateFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.state = st
 	}
 	return fires
 }

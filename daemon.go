@@ -98,6 +98,11 @@ type daemon struct {
 	// forgets the spell, like startFailures.
 	deferredSince map[string]time.Time
 	inflight      map[string]int
+	// stateHeld is why the state file could not be read at start. While it
+	// is set the daemon dispatches nothing and saves nothing.
+	stateHeld error
+	// stateNotified is the hold error last notified; tick-only.
+	stateNotified string
 }
 
 func runDaemon() error {
@@ -121,10 +126,15 @@ func runDaemon() error {
 		log.Printf("interrupted-run scan: %v", err)
 	}
 
+	st, stateErr := loadState(p.StateFile())
+	if stateErr != nil {
+		st = emptyState()
+	}
 	d := &daemon{
 		paths:          p,
 		client:         client,
-		state:          loadState(p.StateFile()),
+		state:          st,
+		stateHeld:      stateErr,
 		startTimeout:   startTimeout,
 		settle:         shellSettle,
 		pause:          pollPause,
@@ -215,6 +225,9 @@ func (d *daemon) tick() {
 		}
 	}()
 	d.rotateLog()
+	if d.holdingState() {
+		return
+	}
 	now := time.Now()
 	// A scheduled wake becomes an ordinary wake the tick its instant arrives, so
 	// the loop below fires it under the same rules as every other wake.
@@ -255,8 +268,11 @@ func (d *daemon) tick() {
 			d.startRun(a, d.state.lastRun(a.Name), triggerWake, false)
 		} else if d.deferPending(a.Name) {
 			// A deferred script is retried every tick until it runs or its
-			// retry window closes.
-			d.startRun(a, d.state.lastRun(a.Name), "", false)
+			// retry window closes; a window that closed while nothing retried
+			// ends the spell without a run.
+			if !d.expireDefer(a, now) {
+				d.startRun(a, d.state.lastRun(a.Name), "", false)
+			}
 		}
 	}
 	if len(fileErrs) == 0 {
@@ -270,7 +286,41 @@ func (d *daemon) tick() {
 	d.saveState()
 }
 
+// holdingState retries a state file that could not be read and reports
+// whether the daemon still holds. The file is left exactly as it is, and the
+// hold is notified once per distinct error.
+func (d *daemon) holdingState() bool {
+	d.mu.Lock()
+	held := d.stateHeld
+	d.mu.Unlock()
+	if held == nil {
+		return false
+	}
+	st, err := loadState(d.paths.StateFile())
+	if err == nil {
+		d.state = st
+		d.mu.Lock()
+		d.stateHeld = nil
+		d.mu.Unlock()
+		d.stateNotified = ""
+		log.Printf("state file readable again; resuming")
+		return false
+	}
+	log.Printf("holding, nothing runs until the state file reads: %v", err)
+	if err.Error() != d.stateNotified {
+		d.stateNotified = err.Error()
+		d.notify("Shepherd: holding, cannot read its state", err.Error(), "none")
+	}
+	return true
+}
+
 func (d *daemon) saveState() {
+	d.mu.Lock()
+	held := d.stateHeld
+	d.mu.Unlock()
+	if held != nil {
+		return
+	}
 	if err := d.state.save(d.paths.StateFile()); err != nil {
 		log.Printf("state save error: %v", err)
 	}
@@ -616,11 +666,37 @@ func (d *daemon) noteDefer(a *Action) (record, expired bool) {
 		d.deferredSince[a.Name] = time.Now()
 		return true, false
 	}
-	if time.Since(first) < window {
+	if !deferExpired(a, first, time.Now()) {
 		return false, false
 	}
 	delete(d.deferredSince, a.Name)
 	return true, true
+}
+
+// deferExpired reports whether a deferral spell that began at first has spent
+// a's retry window by now.
+func deferExpired(a *Action, first, now time.Time) bool {
+	return now.Sub(first) >= time.Duration(a.DeferRetryMinutes)*time.Minute
+}
+
+// expireDefer ends a pending deferral whose retry window closed before a retry
+// ran, and records the occurrence as never run. It reports whether it did.
+func (d *daemon) expireDefer(a *Action, now time.Time) bool {
+	d.mu.Lock()
+	first, ok := d.deferredSince[a.Name]
+	if !ok || !deferExpired(a, first, now) {
+		d.mu.Unlock()
+		return false
+	}
+	delete(d.deferredSince, a.Name)
+	d.mu.Unlock()
+	detail := fmt.Sprintf("retry window of %dm closed before a retry ran", a.DeferRetryMinutes)
+	d.state.setStatus(a.Name, "deferred-expired")
+	d.saveState()
+	d.appendRun(runRecord{At: now, Action: a.Name, Kind: a.Kind, Status: "deferred-expired", Detail: detail})
+	d.notify("Shepherd: "+a.Name+" never ran", fmt.Sprintf("Its %dm retry window closed before a retry ran", a.DeferRetryMinutes), "none")
+	log.Printf("%s: deferred-expired (%s)", a.Name, detail)
+	return true
 }
 
 func (d *daemon) clearDefer(name string) {

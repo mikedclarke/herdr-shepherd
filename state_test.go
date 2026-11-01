@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,7 +48,10 @@ func TestStateSaveLoadRoundTrip(t *testing.T) {
 	if err := st.save(path); err != nil {
 		t.Fatal(err)
 	}
-	got := loadState(path)
+	got, err := loadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !got.lastRun("build-sync").Equal(when) || got.lastStatus("build-sync") != "completed" || !got.heartbeatAt().Equal(when) {
 		t.Errorf("round trip lost data: %+v", got)
 	}
@@ -76,7 +81,7 @@ func TestStateConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	if got := loadState(path); got.Actions == nil {
+	if got, err := loadState(path); err != nil || got.Actions == nil {
 		t.Fatal("state unreadable after concurrent saves")
 	}
 }
@@ -85,9 +90,9 @@ func TestLoadStatePreservesCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 	os.WriteFile(path, []byte("{not json"), 0o644)
-	st := loadState(path)
-	if len(st.Actions) != 0 {
-		t.Errorf("corrupt state should load empty")
+	st, err := loadState(path)
+	if err != nil || len(st.Actions) != 0 {
+		t.Errorf("corrupt state should load empty, got %v", err)
 	}
 	if _, err := os.Stat(path + ".corrupt"); err != nil {
 		t.Errorf("corrupt file should be preserved: %v", err)
@@ -105,6 +110,70 @@ func TestReadStateLeavesTheFileAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("the state file should be left in place: %v", err)
+	}
+	if _, err := os.Stat(path + ".corrupt"); err == nil {
+		t.Error("a reader must not quarantine")
+	}
+}
+
+// unreadableState writes a state file with one stamped action and makes it
+// unreadable for the rest of the test.
+func unreadableState(t *testing.T, path, name string, when time.Time) []byte {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads anything")
+	}
+	st := emptyState()
+	st.setLastRun(name, when)
+	if err := st.save(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+	return data
+}
+
+func TestLoadStateLeavesAnUnreadableFileAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	want := unreadableState(t, path, "nightly-report", time.Date(2026, 7, 24, 6, 0, 0, 0, time.Local))
+	if _, err := loadState(path); !errors.Is(err, errStateUnreadable) {
+		t.Fatalf("want errStateUnreadable, got %v", err)
+	}
+	if _, err := os.Stat(path + ".corrupt"); err == nil {
+		t.Error("an unreadable file is not corrupt and must not be quarantined")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(want) {
+		t.Fatalf("the file changed: %v", err)
+	}
+}
+
+func TestReadStateWarnsOnAnUnreadableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	unreadableState(t, path, "nightly-report", time.Now())
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = w
+	st := readState(path)
+	os.Stderr = stderr
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if len(st.Actions) != 0 {
+		t.Error("an unreadable file should show no history")
+	}
+	if !strings.Contains(string(out), "cannot read state file") {
+		t.Errorf("want a cannot-read warning, got %q", out)
 	}
 	if _, err := os.Stat(path + ".corrupt"); err == nil {
 		t.Error("a reader must not quarantine")
