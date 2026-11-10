@@ -470,6 +470,39 @@ func TestRunAgentDoesNotResendWhenThePaneHasTheLine(t *testing.T) {
 	}
 }
 
+func TestRunAgentDoesNotResendWhenTheLineWrapsAtTheMarkerSpace(t *testing.T) {
+	// A terminal that soft-wraps at a space can drop it: the row ends just
+	// before the space and the next row starts just after it.
+	fake := &scriptedHerdr{waits: agentNotFoundSteps(40), paneFn: func(sent []string) string {
+		i := strings.Index(sent[0], `\n' `) + len(`\n'`)
+		return "$ " + sent[0][:i] + "\n" + sent[0][i+1:]
+	}}
+	d := agentTestDaemon(t, fake)
+	d.resend, d.startTimeout = 0, 30*time.Millisecond
+	_, detail, _ := d.runAgent(watchedAction(), "")
+	if _, commands, _, _ := fake.counts(); commands != 1 {
+		t.Fatalf("want the initial submit only, got %d commands", commands)
+	}
+	if !strings.Contains(detail, "has the command but has not run it") {
+		t.Fatalf("detail should say what the pane showed: %q", detail)
+	}
+}
+
+func TestRunAgentDoesNotResendWhenAWrappedRowIsPadded(t *testing.T) {
+	// A terminal that pads a wrapped row to the pane width puts spaces inside
+	// the marker's run ID.
+	fake := &scriptedHerdr{waits: agentNotFoundSteps(40), paneFn: func(sent []string) string {
+		i := strings.Index(sent[0], `\n' `) + len(`\n' `) + 3
+		return "$ " + sent[0][:i] + "    \n" + sent[0][i:]
+	}}
+	d := agentTestDaemon(t, fake)
+	d.resend, d.startTimeout = 0, 30*time.Millisecond
+	d.runAgent(watchedAction(), "")
+	if _, commands, _, _ := fake.counts(); commands != 1 {
+		t.Fatalf("want the initial submit only, got %d commands", commands)
+	}
+}
+
 func TestRunAgentDoesNotResendWhenTheShellRanTheLine(t *testing.T) {
 	// The marker's output is on screen: the shell ran the line and the agent
 	// is still loading, so it must not be typed into.

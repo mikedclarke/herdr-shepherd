@@ -28,7 +28,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   agent, answered every call, and a read of the pane shows a prompt with no
   trace of the line. A start that times out is recorded as `startup
   uncertain`, saying what was seen. Every resend is logged with the pane's
-  text.
+  text. The pane read finds the marker even when the terminal soft-wraps the
+  line at one of its spaces or pads a wrapped row.
 - **A failed final check of an idle session is no longer recorded as
   success.** When the last probe after a confirmed idle found no agent, no
   pane, or no answer from herdr, the run was recorded `completed` (and closed

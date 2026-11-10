@@ -797,16 +797,17 @@ func (d *daemon) runAgent(a *Action, trigger string) (status, detail string, sta
 		}
 		if mayResend && time.Now().After(resendAt) {
 			// The recent read catches a marker an agent's output has already
-			// pushed off the screen; joining rows undoes soft wraps.
+			// pushed off the screen. Matching with rows joined and spaces
+			// dropped undoes soft wraps, including one at the marker's space.
 			text, rerr := d.client.paneRead(paneID, "visible", startPaneLines)
 			recent, recentErr := d.client.paneRead(paneID, "recent", startPaneLines)
-			flat := strings.NewReplacer("\r", "", "\n", "").Replace(text + "\n" + recent)
+			flat := unwrapped(text + "\n" + recent)
 			switch {
 			case rerr != nil || recentErr != nil:
 				mayResend, paneSeen = false, "the pane could not be read"
-			case strings.Contains(flat, markerRan(runID)):
+			case strings.Contains(flat, unwrapped(markerRan(runID))):
 				mayResend, paneSeen = false, "the shell ran the command"
-			case strings.Contains(flat, markerTyped(runID)):
+			case strings.Contains(flat, unwrapped(markerTyped(runID))):
 				mayResend, paneSeen = false, "the shell has the command but has not run it"
 			case strings.TrimSpace(text) == "":
 				paneSeen = "the pane was still blank"
@@ -977,6 +978,12 @@ func tailString(s string, n int) string {
 		cut = cut[1:]
 	}
 	return tailMarker + cut
+}
+
+// unwrapped drops line breaks and spaces, so text a terminal soft-wrapped
+// (at a space or not, with or without padding) matches its unwrapped form.
+func unwrapped(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "", " ", "").Replace(s)
 }
 
 // acquireLock takes a kernel flock on the lock file, held for the process
