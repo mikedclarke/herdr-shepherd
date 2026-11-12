@@ -31,7 +31,11 @@ publishable, and `sh scripts/check.sh` must be green.
    done; done
    (cd "$DIST" && shasum -a 256 herdr-shepherd_X.Y.Z_*.tar.gz > SHA256SUMS)
    ```
-5. **Create the GitHub release** with the changelog section as the body:
+5. **Create the GitHub release** with the changelog section as the body. When
+   a version since the last release was never published (0.10.0 went out
+   inside 0.11.0), the body runs down to the last published version instead,
+   headings of the sections in between kept: for 0.11.0,
+   `awk '/^## \[0.11.0\]/{flag=1; next} /^## \[0.9.0\]/{flag=0} flag' CHANGELOG.md`.
    ```sh
    awk '/^## \[X.Y.Z\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md > "$DIST/notes.md"
    gh release create vX.Y.Z --title vX.Y.Z --notes-file "$DIST/notes.md" \
@@ -43,9 +47,18 @@ publishable, and `sh scripts/check.sh` must be green.
    INSTALL_DIR=$(mktemp -d) sh scripts/install.sh   # resolves latest, checks SHA256SUMS
    ```
    The installed binary's `version` must print X.Y.Z.
-7. **Update the installed plugin** wherever it runs (there is no
-   `herdr plugin update`; reinstalling keeps actions and history — they live
-   in the plugin config/state dirs, not the plugin directory):
+7. **Update the installed copy** wherever it runs. On the Herdr desktop app
+   (the standalone daemon), stop the daemon, put the new binary in place and
+   start it again, then refresh the mod with the copy commands in
+   `mods/shepherd/README.md`:
+   ```sh
+   kill -TERM "$(cat ~/.local/state/herdr-shepherd/daemon.lock)"
+   INSTALL_DIR="$HOME/.local/bin" sh scripts/install.sh
+   herdr-shepherd start && herdr-shepherd status   # must say backend: core
+   ```
+   On the terminal Herdr, update the plugin (reinstalling keeps actions and
+   history, which live in the plugin config and state dirs, not the plugin
+   directory):
    ```sh
    herdr plugin install mikedclarke/herdr-shepherd --yes
    ```

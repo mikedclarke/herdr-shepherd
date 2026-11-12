@@ -16,10 +16,12 @@ and writes no files of its own and makes no network calls.
 
 ## Install
 
-Copy this folder into the app's mods folder:
+From a checkout of herdr-shepherd, copy this folder into the app's mods
+folder. The same commands update it later:
 
 ```sh
-cp -R mods/shepherd ~/.config/herdr-app/mods/shepherd
+mkdir -p ~/.config/herdr-app/mods/shepherd
+cp -R mods/shepherd/. ~/.config/herdr-app/mods/shepherd/
 herdr-app check ~/.config/herdr-app/mods/shepherd
 ```
 
@@ -37,8 +39,9 @@ As a tab:
 herdr-app do tab.new --name Shepherd --mod shepherd
 ```
 
-To open the window with a key, add a line to the `global` section of
-`~/.config/herdr-app/keys.json` (any free key works):
+The app has no menu entry for a mod yet, so bind a key to open the window: add
+a line to the `global` section of `~/.config/herdr-app/keys.json` (any free key
+works):
 
 ```json
 "cmd-shift-s": "mod.open:shepherd"

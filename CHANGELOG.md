@@ -7,6 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-12
+
+0.10.0 was not published as a release, so this release carries both: its
+section below is part of this update.
+
 ### Added
 
 - **A mod for the Herdr desktop app** (`mods/shepherd/`): a window that lists
@@ -14,10 +19,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   them, shows an action's recent runs, and edits or creates one with a form drawn
   from `fields` or as text. It runs only the command-line verbs and writes no
   files itself. Install by copying the folder into the app's mods folder.
-
-## [0.11.0] - 2026-11-12
-
-### Added
 
 - **Machine-readable verbs for other front ends.** `list --json`, `get <name>`,
   `fields`, `apply`, `put-toml <name>`, `enable <name>`, `disable <name>`,

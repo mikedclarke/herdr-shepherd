@@ -4,7 +4,7 @@
 [![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.8.0-blue)](https://herdr.dev)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Shepherd is a [herdr](https://herdr.dev) plugin that runs your coding agents on a schedule: an inbox triage every hour, a morning digest at six, a repo sync overnight. Every run opens as a real session in the herd, a tab in one `scheduled` workspace, where you can watch it work, catch it when it blocks, and review what it did.
+Shepherd runs your coding agents on a schedule for [herdr](https://herdr.dev): an inbox triage every hour, a morning digest at six, a repo sync overnight. Every run opens as a real session, a tab in one `scheduled` workspace, where you can watch it work, catch it when it blocks, and review what it did.
 
 herdr shows you what your agents are doing. Shepherd decides when they run.
 
@@ -16,11 +16,27 @@ herdr shows you what your agents are doing. Shepherd decides when they run.
 - **Routines**: run an agent on a schedule (weekdays at 9, monthly on the 1st, or any cron expression).
 - **Scripts**: run plain commands on the same schedules, with timeouts.
 
-Agent runs use herdr's native agent-state detection (working / blocked / done / idle), so a heartbeat stuck on a permission prompt is a visible `blocked` pane and a notification, not a silent background failure. Scripts run headlessly with their output captured in the run log.
+Agent runs use herdr's native agent-state detection (working / blocked / done / idle), so a heartbeat stuck on a permission prompt is a visible `blocked` session and a notification, not a silent background failure. Scripts run headlessly with their output captured in the run log.
 
-## Install
+## Which Herdr are you on?
 
-Requires herdr ≥ 0.8.0 on Linux or macOS. Shepherd is POSIX-only (unix sockets, process groups, and kernel file locks), so there is no Windows build.
+Shepherd is one binary that drives either Herdr. Pick your section:
+
+| You use | You have | Shepherd runs as | Start here |
+| --- | --- | --- | --- |
+| **The terminal Herdr** | the `herdr` command (`herdr --version`) | a herdr plugin: herdr starts it with its server | [Install on the terminal Herdr](#install-on-the-terminal-herdr) |
+| **The Herdr desktop app** | `herdr-app` and `hc` (herdr-core) | a standalone program, started by `herdr-shepherd start` | [Install on the Herdr desktop app](#install-on-the-herdr-desktop-app) |
+| **Both, moving to the app** | all three | the plugin today, the standalone program after the move | [Moving from the terminal Herdr to the app](#moving-from-the-terminal-herdr-to-the-app) |
+
+Schedules, gates, the run log, the board and the CLI behave the same on both. Your action files are the same format on both; only the folders they live in differ.
+
+**Already on Shepherd 0.9.0 with the terminal Herdr?** Nothing changes for you. Update as usual ([Update](#update)); the plugin keeps working exactly as before, and you need no new setting.
+
+Shepherd needs Linux or macOS. It is POSIX-only (unix sockets, process groups, and kernel file locks), so there is no Windows build.
+
+## Install on the terminal Herdr
+
+Requires herdr ≥ 0.8.0.
 
 ```bash
 herdr plugin install mikedclarke/herdr-shepherd
@@ -33,9 +49,9 @@ sh scripts/build.sh
 herdr plugin link /path/to/herdr-shepherd
 ```
 
-`scripts/build.sh` prefers a local Go toolchain (an exact build of the source you have) and falls back to `scripts/install.sh`, which downloads the matching prebuilt binary for your OS and architecture from the GitHub release and checks it against the release's `SHA256SUMS`. No Go toolchain is required.
+`scripts/build.sh` prefers a local Go toolchain (an exact build of the source you have) and falls back to `scripts/install.sh`, which downloads the latest release's prebuilt binary for your OS and architecture and checks it against the release's `SHA256SUMS`. No Go toolchain is required.
 
-Installing registers `Shepherd: Board` and `Shepherd: Status` as plugin actions, and a startup hook that spawns the scheduler daemon whenever the herdr server starts. herdr has no built-in menu for plugin actions; reach them with a keybinding (below) or `herdr plugin action invoke`.
+Installing registers `Shepherd: Board` and `Shepherd: Status` as plugin actions, and a startup hook that spawns the scheduler daemon whenever the herdr server starts. herdr has no built-in menu for plugin actions; reach them with a keybinding ([The board](#the-board)) or `herdr plugin action invoke`.
 
 ### First run
 
@@ -52,6 +68,7 @@ cd ~/.config/herdr/plugins/github/mikedclarke.herdr-shepherd-*/
 ./bin/herdr-shepherd status
 # Shepherd: daemon running
 # 1 action(s) configured, all disabled
+# backend: herdr
 ```
 
 The pane inside herdr matters: the daemon talks to herdr over its socket and needs the `HERDR_SOCKET_PATH` that herdr injects into the panes it opens. A kernel lock keeps any two daemons from double-firing, however they were started.
@@ -72,20 +89,127 @@ ln -s ~/.config/herdr/plugins/github/mikedclarke.herdr-shepherd-*/bin/herdr-shep
 
 (with `~/.local/bin` on your `$PATH`). Every example below that says `herdr-shepherd` assumes you did this; otherwise call `./bin/herdr-shepherd` from the plugin directory.
 
+## Install on the Herdr desktop app
+
+The new Herdr is two programs: the desktop app (`herdr-app`) and herdr-core (`hc`), the runtime that owns every terminal. It has no plugins, so Shepherd runs there as a standalone binary that drives both programs. Each agent run is a tab in a space named `scheduled`, opened without taking the screen.
+
+Requires Shepherd 0.11.0 or later (0.10.0 for the scheduler alone), with `hc` and `herdr-app` on your `$PATH` or in `~/.local/bin`, where they install themselves.
+
+**1. Install the binary.**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mikedclarke/herdr-shepherd/main/scripts/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+# or from a checkout
+go build -o ~/.local/bin/herdr-shepherd .
+```
+
+`herdr-shepherd version` must print 0.11.0 or later.
+
+**2. Choose the backend.** Shepherd picks the terminal Herdr whenever it finds that Herdr's plugin environment or a `herdr` binary that answers, so on a machine that also has the terminal Herdr say which one you mean. It does no harm on a machine with only the app:
+
+```bash
+mkdir -p ~/.config/herdr-shepherd
+echo 'backend = "core"' > ~/.config/herdr-shepherd/config.toml
+```
+
+(`$XDG_CONFIG_HOME/herdr-shepherd/config.toml` when you set `XDG_CONFIG_HOME`.) `HERDR_SHEPHERD_BACKEND=core` overrides the file for one command. `start` passes the backend on to the daemon it launches, but the commands you type later read `config.toml`, so keep the setting there. `herdr-shepherd status` prints the backend it resolved.
+
+**3. Start the daemon.**
+
+```bash
+herdr-shepherd start
+# shepherd daemon started in herdr-core terminal t2a (shepherd)
+herdr-shepherd status
+# Shepherd: daemon running
+# ...
+# backend: core
+```
+
+`start` runs `herdr-shepherd daemon` in a kept herdr-core terminal named `shepherd`, so the daemon has the core's macOS privacy grants, and `hc attach shepherd` (`ctrl+\` detaches) or `hc read shepherd --lines 200` shows its log. When the daemon is already running `start` says so and exits 0; when a `shepherd` terminal is left over from a daemon that died, it removes that terminal first. `herdr-shepherd daemon` still runs the scheduler in the foreground if you would rather host it yourself.
+
+**4. Start it at login (macOS).** Because `start` is safe to repeat, run it at login and every few minutes: [`examples/launchd/dev.herdr-shepherd.start.plist`](examples/launchd/dev.herdr-shepherd.start.plist) is a LaunchAgent that does both. Replace its placeholder paths (the absolute path to your `herdr-shepherd`, and your home folder in the two log paths), then:
+
+```bash
+cp examples/launchd/dev.herdr-shepherd.start.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.herdr-shepherd.start.plist
+```
+
+**5. Keep the app open for agent runs.** An agent run opens its tab through the desktop app, so the app's window must be open when one comes due; on a machine that runs unattended, add the app to your login items. Script actions run without it.
+
+**6. Grant disk access if your actions need it (macOS).** The daemon runs inside herdr-core, so it can read only what herdr-core may read. If an action works in a protected place (an external disk, `~/Documents`, `~/Desktop`), give Herdr Core Full Disk Access in System Settings, Privacy & Security, then restart the daemon (below).
+
+**7. Optional: the Shepherd window.** [`mods/shepherd/`](mods/shepherd/) is a mod for the desktop app: a window that lists the actions and pauses, enables, runs, edits and creates them through the verbs in [Scripting and other front ends](#scripting-and-other-front-ends). From a checkout:
+
+```bash
+mkdir -p ~/.config/herdr-app/mods/shepherd
+cp -R mods/shepherd/. ~/.config/herdr-app/mods/shepherd/
+herdr-app check ~/.config/herdr-app/mods/shepherd
+```
+
+The app has no menu entry for a mod yet, so open the window with a key: its [README](mods/shepherd/README.md) has the line for `keys.json`.
+
+**Where things live.** Actions are `~/.config/herdr-shepherd/actions/*.toml`; history, locks and the log are in `~/.local/state/herdr-shepherd` (`$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` move them). Herdr is never asked for a directory on this backend, and `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR` still win when set. On its first start the daemon seeds a disabled `example-heartbeat.toml`, as under the plugin.
+
+**Restarting the daemon**: stop it, then start it again.
+
+```bash
+kill -TERM "$(cat ~/.local/state/herdr-shepherd/daemon.lock)"
+herdr-shepherd start
+```
+
+**What differs from the terminal Herdr.**
+
+- No plugin actions: `Shepherd: Board` and `Shepherd: Status` do not exist. `herdr-shepherd board` runs the board in the terminal you call it from, and the mod above is the window.
+- Notifications are files. The new Herdr lets only a mod post a notification, so each one Shepherd raises (a blocked session, a config error, `status --notify`) is written to `notify/<unix nanoseconds>.json` in the state directory as `{"title", "body", "sound", "at"}`, written under a `.tmp` name and renamed into place. Files older than a day are deleted. A mod can watch that folder; the Shepherd window does not show them yet.
+- Every command works from any shell; there is no socket to be inside.
+
+## Moving from the terminal Herdr to the app
+
+Do these in order, on the machine that runs the plugin today. The point of the order is that only one daemon ever runs: the plugin's daemon and the standalone one use different lock files, so both running would fire every action twice.
+
+**1. Install the binary and set the backend**: steps 1 and 2 of [Install on the Herdr desktop app](#install-on-the-herdr-desktop-app). Do not start it yet.
+
+**2. Stop the plugin's daemon and disable the plugin.** Disabling matters: herdr runs the startup hook of every enabled plugin when its server starts, and once `config.toml` says `core`, the plugin's hook would start a second core daemon on the plugin's own folders.
+
+```bash
+OLD_STATE=~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd
+kill -TERM "$(cat "$OLD_STATE/daemon.lock")"
+herdr plugin disable mikedclarke.herdr-shepherd
+```
+
+The daemon waits for a running script to finish before it exits (up to ten minutes). Before you go on, `ps -p "$(cat "$OLD_STATE/daemon.lock")"` must show no process.
+
+**3. Copy your actions and history across.**
+
+```bash
+OLD_CONFIG=$(herdr plugin config-dir mikedclarke.herdr-shepherd)
+mkdir -p ~/.config/herdr-shepherd/actions ~/.local/state/herdr-shepherd
+cp -R "$OLD_CONFIG/actions/." ~/.config/herdr-shepherd/actions/
+cp "$OLD_STATE/state.json" "$OLD_STATE"/runs.jsonl* ~/.local/state/herdr-shepherd/
+```
+
+`state.json` carries the last-run times, so routines do not re-run and heartbeats keep their clock. A `directory` written with `~` or `$HOME` needs no change.
+
+**4. Start the new daemon and check it**: steps 3 to 6 of [Install on the Herdr desktop app](#install-on-the-herdr-desktop-app). `herdr-shepherd status` must say `backend: core`, and `herdr-shepherd list` must show your actions with the next runs you expect. A cheap end-to-end check is `herdr-shepherd wake <a harmless script action>` and a `"trigger":"wake"` record in `herdr-shepherd runs` within 30 seconds.
+
+Leave the old folders in place until you are sure; they are your way back.
+
+**Going back** to the plugin: stop the new daemon (`kill -TERM "$(cat ~/.local/state/herdr-shepherd/daemon.lock)"`, and unload the LaunchAgent if you installed it: `launchctl bootout gui/$(id -u)/dev.herdr-shepherd.start`), set `backend = "herdr"` in `config.toml` (or delete the file), then `herdr plugin enable mikedclarke.herdr-shepherd` and restart the herdr server. Runs made on the app side are only in the new folders; copy `state.json` back the other way first if you want the plugin to know about them.
+
 ## Update
 
-Shepherd has no updater of its own; updates ride herdr's plugin mechanics.
+Shepherd has no updater of its own.
 
-**Installed from GitHub:** herdr pins the commit it installed (visible in `herdr plugin list`). To move to the latest, reinstall:
+**Terminal Herdr, installed from GitHub:** herdr pins the commit it installed (visible in `herdr plugin list`). To move to the latest, reinstall:
 
 ```bash
 herdr plugin uninstall mikedclarke.herdr-shepherd
 herdr plugin install mikedclarke/herdr-shepherd
 ```
 
-Pass `--ref v0.6.0` to pin a release instead of taking the default branch. Your actions and run history do not live in the plugin's own directory: actions are TOML files in the plugin config dir (`herdr plugin config-dir mikedclarke.herdr-shepherd`) and history is under the plugin state dir, so replacing the plugin replaces the code, not your schedules.
+Pass `--ref v0.11.0` to `install` to pin a release instead of taking the default branch. Your actions and run history do not live in the plugin's own directory: actions are TOML files in the plugin config dir (`herdr plugin config-dir mikedclarke.herdr-shepherd`) and history is under the plugin state dir, so replacing the plugin replaces the code, not your schedules. The running daemon keeps the binary it started with; restart the herdr server to restart it on the new build.
 
-**Linked checkout:**
+**Terminal Herdr, linked checkout:**
 
 ```bash
 git pull
@@ -94,56 +218,15 @@ sh scripts/build.sh
 
 The already-running daemon keeps the binary it started with; restart the herdr server to restart it on the new build (scheduling changes need this, display-only changes don't). The board, status action, and CLI pick up the new binary the next time they launch.
 
-## Running on the Herdr desktop app (herdr-core)
-
-The new Herdr is two programs: the desktop app (`herdr-app`) and herdr-core (`hc`), the runtime that owns every terminal. It has no plugins, so Shepherd runs there as a standalone binary that drives both programs. Schedules, gates, the run log and the board work exactly as under the terminal Herdr; each agent run is a tab in a space named `scheduled`, started through `hc` so it appears without taking the screen.
-
-**Install the binary.** `hc` and `herdr-app` must be on your `$PATH` or in `~/.local/bin`, where they install themselves.
+**Desktop app:** stop the daemon, run the install command again, then start it:
 
 ```bash
+kill -TERM "$(cat ~/.local/state/herdr-shepherd/daemon.lock)"
 curl -fsSL https://raw.githubusercontent.com/mikedclarke/herdr-shepherd/main/scripts/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
-# or from a checkout
-go build -o ~/.local/bin/herdr-shepherd .
-```
-
-**Choose the backend.** Shepherd picks the terminal Herdr whenever it finds that Herdr's plugin environment or a `herdr` binary that answers, so on a machine with both installed say which one you mean, in `~/.config/herdr-shepherd/config.toml` (or under `$XDG_CONFIG_HOME`):
-
-```toml
-backend = "core"
-```
-
-`HERDR_SHEPHERD_BACKEND=core` overrides the file for one command. `start` passes the backend on to the daemon it launches, but the other commands you type later read `config.toml`, so keep the setting there. `herdr-shepherd status` prints the backend it resolved.
-
-**Start the daemon.**
-
-```bash
 herdr-shepherd start
-# shepherd daemon started in herdr-core terminal t2a (shepherd)
 ```
 
-`start` runs `herdr-shepherd daemon` in a kept herdr-core terminal named `shepherd`, so the daemon has the core's macOS privacy grants, and `hc attach shepherd` (`ctrl+\` detaches) or `hc read shepherd --lines 200` shows its log. When the daemon is already running `start` says so and exits 0; when a `shepherd` terminal is left over from a daemon that died, it removes that terminal first. That makes it safe to run at login and every few minutes: [`examples/launchd/dev.herdr-shepherd.start.plist`](examples/launchd/dev.herdr-shepherd.start.plist) is a LaunchAgent that does both (replace its placeholder paths). `herdr-shepherd daemon` still runs the scheduler in the foreground if you would rather host it yourself.
-
-**Where things live.** Actions are `~/.config/herdr-shepherd/actions/*.toml`; history and locks are in `~/.local/state/herdr-shepherd` (`$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` move them). Herdr is never asked for a directory on this backend, and `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR` still win when set.
-
-**Manage actions from the app.** [`mods/shepherd/`](mods/shepherd/) is a mod for the desktop app: a window that lists the actions and pauses, enables, runs, edits and creates them through the verbs in [Scripting and other front ends](#scripting-and-other-front-ends). Copy the folder to `~/.config/herdr-app/mods/shepherd/`; its README has the key binding.
-
-**Moving from the plugin.** Stop the plugin's daemon first: the two daemons use different lock files, so both running would fire every action twice. Then copy your actions and history across:
-
-```bash
-OLD_CONFIG=$(herdr plugin config-dir mikedclarke.herdr-shepherd)
-OLD_STATE=~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd
-mkdir -p ~/.config/herdr-shepherd ~/.local/state/herdr-shepherd
-cp -R "$OLD_CONFIG/actions" ~/.config/herdr-shepherd/
-cp "$OLD_STATE/state.json" "$OLD_STATE"/runs.jsonl* ~/.local/state/herdr-shepherd/
-```
-
-`state.json` carries the last-run times, so routines do not re-run and heartbeats keep their clock.
-
-**What differs.**
-
-- No plugin actions: `Shepherd: Board` and `Shepherd: Status` do not exist. `herdr-shepherd board` runs the board in the terminal you call it from.
-- Notifications are files. The new Herdr lets only a mod post a notification, so each one Shepherd raises (a blocked session, a config error, `status --notify`) is written to `notify/<unix nanoseconds>.json` in the state directory as `{"title", "body", "sound", "at"}`, written under a `.tmp` name and renamed into place. Files older than a day are deleted. A mod can watch that folder; none ships with this release.
-- The daemon logs to `shepherd.log` in the state directory, as under the plugin.
+Copy the mod folder again too if you use the Shepherd window (step 7 above; the same commands update it).
 
 ## The board
 
@@ -151,7 +234,7 @@ The board is a live status view of every action: schedule, last run, and next ru
 
 ![The board as a zoomed herdr pane: pausing an action, viewing run history, and the guided new-action form](docs/demo.gif)
 
-Open it by binding a key in herdr's config file, `~/.config/herdr/config.toml` (`herdr --help` prints the exact path). This appends the binding and applies it:
+On the desktop app, run `herdr-shepherd board` in any terminal, or use the [Shepherd window](mods/shepherd/README.md) instead. On the terminal Herdr, open it by binding a key in herdr's config file, `~/.config/herdr/config.toml` (`herdr --help` prints the exact path). This appends the binding and applies it:
 
 ```bash
 cat >> ~/.config/herdr/config.toml <<'EOF'
@@ -198,7 +281,7 @@ Invoked as a plugin action it opens as a zoomed herdr pane and closes back to wh
 
 ## Configuring actions
 
-Actions are TOML files in the plugin config directory (`herdr plugin config-dir mikedclarke.herdr-shepherd`), one file per action, under `actions/`. The daemon re-reads them every tick, so edits apply within 30 seconds with no restart.
+Actions are TOML files, one file per action, under `actions/` in the config directory: on the terminal Herdr that is the plugin config directory (`herdr plugin config-dir mikedclarke.herdr-shepherd`), on the desktop app `~/.config/herdr-shepherd` ([Where config and state live](#where-config-and-state-live)). The daemon re-reads them every tick, so edits apply within 30 seconds with no restart.
 
 A heartbeat:
 
@@ -281,7 +364,7 @@ AGENT_CONFIG_DIR = "~/projects/support/agent-config"
 
 Keys must be variable names (letters, digits, underscores, not starting with a digit). The typical use is pointing the agent CLI at a config directory of its own (`PI_CODING_AGENT_DIR` for pi, say) so a scheduled agent never shares settings with the interactive one.
 
-Scripts also accept `defer_retry_minutes`. A script that exits with code 75 (`EX_TEMPFAIL`) is saying "not now, retry later" — for example, the resource it needs is busy. Shepherd records that as `deferred` rather than `error`, raises no notification, and — when `defer_retry_minutes` is set — keeps retrying it every tick until it runs or the window closes (a final `deferred-expired` record, with a notification, since the run never happened).
+Scripts also accept `defer_retry_minutes`. A script that exits with code 75 (`EX_TEMPFAIL`) is saying "not now, retry later" (the resource it needs is busy, say). Shepherd records that as `deferred` rather than `error`, raises no notification, and, when `defer_retry_minutes` is set, keeps retrying it every tick until it runs or the window closes (a final `deferred-expired` record, with a notification, since the run never happened).
 
 ### Defaults
 
@@ -354,11 +437,11 @@ herdr-shepherd version        # print the version
 
 The verbs from `get` to `runs` are for scripts and other front ends; see [Scripting and other front ends](#scripting-and-other-front-ends).
 
-`list`, `status`, `version`, `board`, `wake <name>`, the verbs from `get` to `runs`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`. On the herdr-core backend there is no socket and every command works from any shell (see [Running on the Herdr desktop app](#running-on-the-herdr-desktop-app-herdr-core)).
+`list`, `status`, `version`, `board`, `wake <name>`, the verbs from `get` to `runs`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`. On the herdr-core backend there is no socket and every command works from any shell (see [Install on the Herdr desktop app](#install-on-the-herdr-desktop-app)).
 
 ### Where config and state live
 
-On the herdr-core backend config is `~/.config/herdr-shepherd` and state `~/.local/state/herdr-shepherd` (or under `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`), and herdr is never asked; see [Running on the Herdr desktop app](#running-on-the-herdr-desktop-app-herdr-core). The rest of this section is the terminal Herdr.
+On the herdr-core backend config is `~/.config/herdr-shepherd` and state `~/.local/state/herdr-shepherd` (or under `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`), and herdr is never asked; see [Install on the Herdr desktop app](#install-on-the-herdr-desktop-app). The rest of this section is the terminal Herdr.
 
 - **Config** is herdr's managed plugin directory: `herdr plugin config-dir mikedclarke.herdr-shepherd` prints it, and actions live in `actions/*.toml` inside it. Inside a plugin context herdr injects `HERDR_PLUGIN_CONFIG_DIR` and that wins. From an ordinary shell the CLI asks herdr for the same directory, so `list` and `status` agree with the daemon.
 - **Fallbacks** apply only when herdr itself is unreachable: `$XDG_CONFIG_HOME/herdr-shepherd`, else `~/.config/herdr-shepherd`. Shepherd prints one warning naming the directory it fell back to and why; a fallback means you are reading a different set of actions than the daemon is running.
@@ -404,10 +487,10 @@ Run    = {"at", "action", "kind", "status", "detail", "trigger", "duration_secs"
 ## Troubleshooting
 
 - **Daemon logs:** `shepherd.log` in the state directory, alongside `runs.jsonl` (one JSON line per run) and `state.json`. The running daemon rotates both at 5 MB, keeping one previous generation (`shepherd.log.1`, `runs.jsonl.1`); no restart is needed to keep them bounded, and the board's history view reads the rotated run log too, so rotation never blanks recent history.
-- **Is it alive?** `herdr-shepherd status`, or the `Shepherd: Status` action (via your keybinding or `herdr plugin action invoke status --plugin mikedclarke.herdr-shepherd`). "Daemon not running" with a running herdr means the startup hook hasn't fired since the plugin was installed or linked. Start it with `daemon --detach` from a herdr pane in the plugin directory (see [First run](#first-run)), or restart the herdr server. `SIGTERM` and `ctrl+c` stop the daemon cleanly and release its lock.
+- **Is it alive?** `herdr-shepherd status`, or the `Shepherd: Status` action (via your keybinding or `herdr plugin action invoke status --plugin mikedclarke.herdr-shepherd`). "Daemon not running" with a running herdr means the startup hook hasn't fired since the plugin was installed or linked. Start it with `daemon --detach` from a herdr pane in the plugin directory (see [First run](#first-run)), or restart the herdr server. On the desktop app, `herdr-shepherd start` starts it, and `hc read shepherd --lines 200` shows why the last one stopped; `status` printing `backend: herdr` there means `config.toml` is missing or says otherwise. `SIGTERM` and `ctrl+c` stop the daemon cleanly and release its lock.
 - **Board keybinding does nothing:** the board opens with or without the daemon (a stopped daemon is a status line on the board, not a dead key), so a silent key is a wiring problem, not a scheduling one. Check the `[[keys.command]]` block is really in herdr's `config.toml` and that you ran `herdr server reload-config` after adding it, and check the action is registered with `herdr plugin action list`. Then bypass the key entirely: `herdr plugin action invoke board --plugin mikedclarke.herdr-shepherd`. If that fails too, `herdr plugin log mikedclarke.herdr-shepherd` has the command's output; `no such file or directory` there means the install-time build never produced `bin/herdr-shepherd`, so run `sh scripts/build.sh` from the plugin directory.
 - **Config errors:** a TOML file that won't parse, has an unknown key, or fails validation disables only itself; every other action keeps running. It shows up as a board row carrying its error, is logged each tick, and raises **one** herdr notification per distinct error, so a broken file doesn't notify you every 30 seconds. Fix it and the error clears; break it again later and you get a fresh notification.
-- **Run statuses:** `started` is a launched agent session (manual runs stop here by design); `completed` is a clean finish; `attention` means look at the session (it needed input, exceeded its watch window, or its agent exited unexpectedly); `cancelled` means its pane was closed mid-run; `error` carries the failure detail; `skipped` is an agent occurrence whose `gate` exited 75 (nothing for the agent to do; the heartbeat clock still advances); `deferred` is a script that exited 75 ("retry later" — not a failure, no notification); `deferred-expired` is a deferred script whose retry window closed without a successful run; `interrupted` is written at daemon start for a run that was `started` when the daemon or the machine went down, so a crash mid-run leaves a record instead of a gap.
+- **Run statuses:** `started` is a launched agent session (manual runs stop here by design); `completed` is a clean finish; `attention` means look at the session (it needed input, exceeded its watch window, or its agent exited unexpectedly); `cancelled` means its pane was closed mid-run; `error` carries the failure detail; `skipped` is an agent occurrence whose `gate` exited 75 (nothing for the agent to do; the heartbeat clock still advances); `deferred` is a script that exited 75 ("retry later": not a failure, no notification); `deferred-expired` is a deferred script whose retry window closed without a successful run; `interrupted` is written at daemon start for a run that was `started` when the daemon or the machine went down, so a crash mid-run leaves a record instead of a gap.
 
 ## Contributing
 
