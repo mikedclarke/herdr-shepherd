@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.10.0"
+const version = "0.11.0"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>
@@ -27,6 +27,19 @@ func usage(w *os.File) {
                  runs in the calling terminal on herdr-core)
   list           List actions with their schedules and next runs
   run <name>     Fire an action now
+  get <name>     Print an action's file
+  fields         The guided form's fields, as the board's form draws them
+  apply          Create or edit an action from the form's values (JSON on
+                 stdin: {"name", "previous_name", "values"}), validated as
+                 the board's form validates; a new action starts disabled
+  put-toml <name>
+                 Replace an action's file with the TOML on stdin, once it
+                 loads cleanly
+  enable <name>, disable <name>
+                 Resume or pause an action (the file's other text is kept)
+  runs           Recent runs, newest first
+    --action <name>  only this action's runs
+    --limit N        at most N (default 50)
   wake <name>    Ask the daemon to fire an action on its next tick (queued
                  behind a running run, debounced, recorded as trigger "wake")
     --at <when>  Fire it at an instant instead of now: RFC3339 or
@@ -36,6 +49,11 @@ func usage(w *os.File) {
     --notify     Also show the status as a herdr notification (on herdr-core,
                  a file in the state dir's notify/ folder)
   version        Print the version
+
+With --json, list, get, fields, enable, disable, runs and run print one JSON
+object on stdout, and a failure prints {"error": "..."} and exits 1; apply and
+put-toml always answer in JSON. The shapes are in the README, "Scripting and
+other front ends".
 
 The backend is the terminal Herdr ("herdr") or the Herdr desktop app's
 herdr-core ("core"): HERDR_SHEPHERD_BACKEND, else backend = "..." in
@@ -64,8 +82,16 @@ func main() {
 		// Internal: the manifest's pane entrypoint (herdr hosts the TUI).
 		err = runBoardUI()
 	case "list":
+		if hasJSONFlag(os.Args[2:]) {
+			os.Exit(runAPIVerb(os.Stdout, os.Stderr, os.Stdin, "list", os.Args[2:]))
+		}
 		err = cmdList()
+	case "get", "fields", "apply", "put-toml", "enable", "disable", "runs":
+		os.Exit(runAPIVerb(os.Stdout, os.Stderr, os.Stdin, os.Args[1], os.Args[2:]))
 	case "run":
+		if hasJSONFlag(os.Args[2:]) {
+			os.Exit(runAPIVerb(os.Stdout, os.Stderr, os.Stdin, "run", os.Args[2:]))
+		}
 		if len(os.Args) < 3 {
 			err = fmt.Errorf("run: action name required")
 		} else {

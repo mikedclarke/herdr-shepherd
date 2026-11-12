@@ -7,6 +7,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-12
+
+### Added
+
+- **Machine-readable verbs for other front ends.** `list --json`, `get <name>`,
+  `fields`, `apply`, `put-toml <name>`, `enable <name>`, `disable <name>`,
+  `runs` and `run <name> --json` let a desktop app, a phone app or a script
+  list, create, edit, pause, resume and run actions without reading
+  shepherd's files. With `--json` each prints one JSON object, and a failure
+  prints `{"error", "fields"}` with the field to change and exits 1. `apply`
+  runs the board form's validation and writes the file the way the form does
+  (a new action starts disabled; an existing file is never replaced by a
+  create or a rename); `put-toml` is the board's raw edit, comments kept;
+  `enable` and `disable` change only the `enabled` line. `fields` describes
+  the board's form, field by field, so a client can draw it. The shapes are
+  in the README, "Scripting and other front ends". Without `--json` the
+  existing commands print what they always did.
+
 ## [0.10.0] - 2026-11-12
 
 ### Added

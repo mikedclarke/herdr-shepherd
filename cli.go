@@ -242,10 +242,26 @@ func cmdStatus(notify bool) error {
 // a manual run means someone is present). Manual runs do not consult or update
 // the daemon's schedule.
 func cmdRun(name string) error {
+	_, err := runNow(name, os.Stdout, os.Stdout)
+	return err
+}
+
+// runOutcome is what a manual run did: the record it wrote, for run --json.
+type runOutcome struct {
+	kind   Kind
+	status string
+	detail string
+}
+
+// runNow is cmdRun with its messages and a script's output sent where the
+// caller asks: the terminal for run, stderr for run --json, whose stdout is
+// the JSON reply. A script that ran and failed returns its outcome and its
+// error both.
+func runNow(name string, msgs, scriptOut io.Writer) (runOutcome, error) {
 	p := resolvePaths()
 	actions, err := loadForCLI(p)
 	if err != nil {
-		return err
+		return runOutcome{}, err
 	}
 	var action *Action
 	var names []string
@@ -256,23 +272,23 @@ func cmdRun(name string) error {
 		}
 	}
 	if action == nil {
-		return fmt.Errorf("no action named %q; available: %v", name, names)
+		return runOutcome{}, fmt.Errorf("no action named %q; available: %v", name, names)
 	}
 
 	release, ok, err := tryRunLock(p.StateDir, action.Name)
 	if err != nil {
-		return err
+		return runOutcome{}, err
 	}
 	if !ok {
-		return fmt.Errorf("%s is already running (another process)", action.Name)
+		return runOutcome{}, fmt.Errorf("%s is already running (another process)", action.Name)
 	}
 	defer release()
 
 	if action.Kind == KindScript {
-		fmt.Printf("Running %s in %s\n", action.Name, action.Dir())
+		fmt.Fprintf(msgs, "Running %s in %s\n", action.Name, action.Dir())
 		began := time.Now()
 		out := &tailBuffer{max: outputTailMax}
-		runErr := runScriptOnce(action, io.MultiWriter(os.Stdout, out))
+		runErr := runScriptOnce(action, io.MultiWriter(scriptOut, out))
 		rec := runRecord{
 			At: time.Now(), Action: action.Name, Kind: action.Kind,
 			Status: "completed", Detail: out.String(), Trigger: triggerManual,
@@ -289,7 +305,7 @@ func cmdRun(name string) error {
 		if lerr := appendRunLog(p.RunLogFile(), rec); lerr != nil {
 			fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
 		}
-		return runErr
+		return runOutcome{kind: action.Kind, status: rec.Status, detail: rec.Detail}, runErr
 	}
 
 	if action.Gate != "" {
@@ -297,11 +313,11 @@ func cmdRun(name string) error {
 		verdict, gateDetail := runGate(action, triggerManual)
 		switch verdict {
 		case gateSkip:
-			fmt.Printf("Skipped %s: %s\n", action.Name, gateDetail)
+			fmt.Fprintf(msgs, "Skipped %s: %s\n", action.Name, gateDetail)
 			if lerr := appendRunLog(p.RunLogFile(), skippedRecord(action, gateDetail, triggerManual, began)); lerr != nil {
 				fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
 			}
-			return nil
+			return runOutcome{kind: action.Kind, status: "skipped", detail: gateDetail}, nil
 		case gateFailed:
 			fmt.Fprintln(os.Stderr, "warning:", gateDetail, "(running the agent anyway)")
 		}
@@ -311,13 +327,38 @@ func cmdRun(name string) error {
 	// user once its session is up, and nobody watches it after that.
 	tabID, err := startAgentRun(action)
 	if err != nil {
-		return err
+		return runOutcome{}, err
 	}
 	if lerr := recordManualStart(action, tabID); lerr != nil {
 		fmt.Fprintln(os.Stderr, "warning: run log:", lerr)
 	}
-	fmt.Printf("Started %s in tab %s\n", action.Name, tabID)
-	return nil
+	fmt.Fprintf(msgs, "Started %s in tab %s\n", action.Name, tabID)
+	return runOutcome{kind: action.Kind, status: "started", detail: "tab " + tabID}, nil
+}
+
+type runReply struct {
+	Started bool   `json:"started"`
+	Name    string `json:"name"`
+	Kind    Kind   `json:"kind"`
+	Status  string `json:"status"`
+	Detail  string `json:"detail"`
+}
+
+// runNowJSON is run --json. A script runs to its end before the reply, which
+// carries the status it recorded; a gate that skips the run answers
+// started false.
+func runNowJSON(name string) (runReply, error) {
+	if err := nameError(name); err != nil {
+		return runReply{}, err
+	}
+	out, err := runNow(name, os.Stderr, os.Stderr)
+	if out.status == "" {
+		return runReply{}, err
+	}
+	return runReply{
+		Started: out.status != "skipped", Name: name, Kind: out.kind,
+		Status: out.status, Detail: out.detail,
+	}, nil
 }
 
 // startAgentRun opens a manual run's tab and submits the agent command.

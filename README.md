@@ -341,10 +341,18 @@ herdr-shepherd run <name>     # fire an action now
 herdr-shepherd wake <name>    # ask the daemon to fire an action on its next tick
 herdr-shepherd wake <name> --at "2026-09-01 08:35"   # ...or at an instant
 herdr-shepherd status         # daemon liveness, next run, backend (--notify for a herdr toast)
+herdr-shepherd get <name>     # print an action's file
+herdr-shepherd fields         # the guided form's fields
+herdr-shepherd apply          # create or edit an action from JSON on stdin
+herdr-shepherd put-toml <name>  # replace an action's file with TOML on stdin
+herdr-shepherd enable <name>  # resume (disable <name> pauses)
+herdr-shepherd runs           # recent runs, newest first (--action <name>, --limit N)
 herdr-shepherd version        # print the version
 ```
 
-`list`, `status`, `version`, `board`, `wake <name>`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`. On the herdr-core backend there is no socket and every command works from any shell (see [Running on the Herdr desktop app](#running-on-the-herdr-desktop-app-herdr-core)).
+The verbs from `get` to `runs` are for scripts and other front ends; see [Scripting and other front ends](#scripting-and-other-front-ends).
+
+`list`, `status`, `version`, `board`, `wake <name>`, the verbs from `get` to `runs`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`. On the herdr-core backend there is no socket and every command works from any shell (see [Running on the Herdr desktop app](#running-on-the-herdr-desktop-app-herdr-core)).
 
 ### Where config and state live
 
@@ -355,6 +363,41 @@ On the herdr-core backend config is `~/.config/herdr-shepherd` and state `~/.loc
 - **State** is `HERDR_PLUGIN_STATE_DIR` when herdr injects it; otherwise `~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd` alongside a managed config dir, or `$XDG_STATE_HOME/herdr-shepherd` / `~/.local/state/herdr-shepherd` on the fallback path. It holds `state.json` (last-run times), `runs.jsonl` (run history), `shepherd.log`, the daemon lock, and the per-action run locks.
 - With no home directory and no overrides set, shepherd fails with a clear error rather than scattering state into the current directory.
 - **Keep the state directory on a local filesystem.** The run log and the run locks use kernel file locks, whose semantics over NFS (and most network filesystems) range from slow to advisory-in-name-only. Two hosts sharing one state directory over NFS can double-fire an action.
+
+## Scripting and other front ends
+
+The board is one way to manage actions; anything that can run a command can be another (a desktop app, a phone app over SSH, a shell script). These verbs give such a front end everything the board has without reading shepherd's files: the validation, the file format and the locks stay in shepherd. Each verb finds its directories the way `list` does, on either backend, from any shell.
+
+With `--json` a verb prints exactly one JSON object on stdout, on one line. On failure it prints `{"error": "...", "fields": {"<field>": "<message>"}}` instead (`fields` only for a validation error, keyed by the field to change) and exits 1. Without `--json` the human output of the existing commands is unchanged. `apply` and `put-toml` read stdin and always answer in JSON.
+
+| Verb | Output and behaviour |
+|---|---|
+| `list --json` | `{"version", "backend", "daemon": {"running", "pid"}, "config_dir", "state_dir", "actions": [Action]}`, sorted by name. A file that does not load is listed with its `error`, its `name` from the file name and the other fields null. `daemon.running` is `status`'s rule (a heartbeat in the state file in the last 90 seconds) |
+| `get <name> --json` | `{"action": Action, "values": {<key>: <value>}, "toml": "<the file's text>"}`. `values` holds every form field for the action's kind, with the keys `fields` lists, ready to edit and send back to `apply`. For a file that does not load, `values` is null and `toml` is its text, for `put-toml` to fix |
+| `fields --json` | `{"kinds": ["heartbeat", "routine", "script"], "fields": [Field]}`: the board's form, so a client draws it without knowing the file format |
+| `apply` (JSON on stdin) | `{"name", "previous_name", "values"}`; `previous_name` for an edit or a rename, left out for a create. Missing values keep the form's defaults (create) or the action's own (edit). Runs the board form's validation before anything is written. A create writes `enabled = false` and never replaces an existing file or action; an edit keeps `enabled` and the keys the form does not show (`gate`, `gate_timeout_minutes`, `append_system_prompt`, `[env]`), and like any form save it rewrites the file, so comments go; a rename moves the file. Prints `{"action": Action}` |
+| `put-toml <name>` (TOML on stdin) | The board's `E`: the text must load as an action named `<name>`, exactly as the daemon would load it, and then replaces the file atomically, comments and all. Works on a file that does not load, to fix it. It never creates an action. Prints `{"action": Action}` |
+| `enable <name>`, `disable <name>` | The board's resume and pause: only the top-level `enabled` line changes. `--json` prints `{"action": Action}` |
+| `runs --json [--action <name>] [--limit N]` | `{"runs": [Run]}`, newest first, 50 by default, from the run log and the rotated one before it |
+| `run <name> --json` | The same run as `run <name>`, with the reply `{"started", "name", "kind", "status", "detail"}`. An agent action replies once its tab is open (`status` `started`, `detail` `tab <id>`). A script runs to its end first, its output going to stderr, and the reply carries the status it recorded (`completed`, `error`, `deferred`). A gate that skips the run replies `started: false`, `status: "skipped"` |
+| `wake <name>` | Unchanged |
+
+```
+Action = {"name", "kind", "enabled", "schedule": "<the text list prints>", "directory",
+          "last_run": {"at", "status", "detail", "duration_secs", "trigger"} or null,
+          "next_run": <time> or null, "running", "file": "<absolute path>", "error": null or "<message>"}
+Field  = {"key", "label", "help", "type": "text" | "multiline" | "choice" | "bool" | "number",
+          "multiple": true (a choice that takes several options), "options": [{"value", "label"}] (choice only),
+          "kinds": [the kinds that show it], "required", "default": <value or null>,
+          "show_when": {"<other key>": [values]} or null}
+Run    = {"at", "action", "kind", "status", "detail", "trigger", "duration_secs"}
+```
+
+- Times are RFC 3339 to the second. `trigger` is `schedule`, `wake` or `manual`. `duration_secs` is null where no duration is known (a started record, a manual agent run). `last_run` is the action's newest record in the run log, else the last run in the state file.
+- `next_run` is null for a disabled action. `running` is the action's run lock, as the board shows `running…`.
+- A field is shown when the action's kind is in its `kinds` and, for each key in `show_when`, the form's current value of that key is one of the listed values. Values are strings for `text`, `multiline` and `choice`, numbers (or null when blank) for `number`, and booleans for `bool`. A `multiple` choice's value is its option values joined by commas (`"1,3,5"`); `apply` also takes a list. A `number` may be sent as a string.
+- `enabled` is not a form field here: `enable` and `disable` set it, and `apply` refuses it. The model is a free-text field; the board's model presets and pi's model catalog are not part of `fields`.
+- Names are checked before any path is built, with the loader's rule: no whitespace, no `/` or `\`, no leading dot. No verb deletes an action.
 
 ## Troubleshooting
 

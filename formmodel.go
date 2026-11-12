@@ -272,6 +272,15 @@ func newFormModel(actionsDir string) *formModel {
 // survive a form edit; the raw-TOML editor remains for that).
 func newFormModelForAction(a *Action, actionsDir string) *formModel {
 	f := newFormModel(actionsDir)
+	f.loadAction(a)
+	f.rebuild()
+	return f
+}
+
+// loadAction fills the form's values and carried keys from an existing action,
+// without rebuilding the field list (which, for cli = "pi", asks pi for its
+// models).
+func (f *formModel) loadAction(a *Action) {
 	f.editPath = a.SourceFile
 	f.origName = a.Name
 	f.carryGate = a.Gate
@@ -316,8 +325,6 @@ func newFormModelForAction(a *Action, actionsDir string) *formModel {
 	if r.Cron != "" {
 		v["cron"] = r.Cron
 	}
-	f.rebuild()
-	return f
 }
 
 func csvInts(ns []int) string {
