@@ -7,6 +7,30 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-12
+
+### Added
+
+- **Runs on the Herdr desktop app (herdr-core) as well as the terminal
+  Herdr.** One binary drives either. The backend is `HERDR_SHEPHERD_BACKEND`,
+  else `backend = "core"` (or `"herdr"`) in `config.toml` in
+  `~/.config/herdr-shepherd`, else whichever is installed: the plugin
+  environment or an answering `herdr` means the terminal Herdr, otherwise `hc`
+  means the core. Under the terminal Herdr nothing changes. On the core,
+  agent runs are tabs in a `scheduled` space, started through `hc` without
+  taking the screen; config and state live in `~/.config/herdr-shepherd` and
+  `~/.local/state/herdr-shepherd`; the board runs in the calling terminal;
+  and a notification is a JSON file in the state directory's `notify/` folder,
+  kept for a day, for a mod to show (none ships yet).
+- **`herdr-shepherd start`** (herdr-core only) starts the daemon in a kept
+  herdr-core terminal named `shepherd`, so it has the core's macOS privacy
+  grants and you can attach to it. It does nothing when the daemon is already
+  running and clears a `shepherd` terminal a dead daemon left behind, so it is
+  safe at login and every few minutes. `examples/launchd/` has a LaunchAgent
+  that does that.
+- **`status` names the backend** in use on a third line, `backend: herdr` or
+  `backend: core`.
+
 ### Fixed
 
 - **A frequent schedule no longer bursts after a restart, wake or enable.**

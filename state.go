@@ -25,9 +25,13 @@ const pluginID = "mikedclarke.herdr-shepherd"
 // the env vars are absent, so the CLI asks herdr for the managed config dir —
 // otherwise `list` and `status` would silently read different directories than
 // the daemon. XDG-style fallbacks apply only when herdr itself is unreachable.
+// On the core backend the XDG-style directories are the standalone home and
+// herdr is never asked; the injected env vars still win there.
 type paths struct {
 	ConfigDir string
 	StateDir  string
+	// Backend is the backend the directories were resolved for.
+	Backend string
 }
 
 func resolvePaths() paths {
@@ -36,9 +40,31 @@ func resolvePaths() paths {
 		StateDir:  os.Getenv("HERDR_PLUGIN_STATE_DIR"),
 	}
 	home, homeErr := os.UserHomeDir()
+	backend, herdr := mustDetectBackend()
+	p.Backend = backend
+	if backend == backendCore {
+		if p.ConfigDir == "" {
+			p.ConfigDir = standaloneConfigDir()
+			if p.ConfigDir == "" {
+				mustHome(home, homeErr)
+			}
+		}
+		if p.StateDir == "" {
+			if x := os.Getenv("XDG_STATE_HOME"); x != "" {
+				p.StateDir = filepath.Join(x, "herdr-shepherd")
+			} else {
+				p.StateDir = filepath.Join(mustHome(home, homeErr), ".local", "state", "herdr-shepherd")
+			}
+		}
+		return p
+	}
 	managed := p.ConfigDir != ""
 	if p.ConfigDir == "" {
-		if dir := herdrConfigDir(); dir != "" {
+		dir := herdr.dir
+		if !herdr.asked {
+			dir = herdrConfigDir()
+		}
+		if dir != "" {
 			p.ConfigDir = dir
 			managed = true
 		} else if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {

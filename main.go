@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "0.9.0"
+const version = "0.10.0"
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, `usage: herdr-shepherd <command>
@@ -19,8 +19,12 @@ func usage(w *os.File) {
   daemon         Run the scheduler in the foreground
     --detach     Spawn the scheduler detached and exit (the manifest startup
                  hook uses this; logs go to shepherd.log in the state dir)
+  start          herdr-core only: start the daemon in a kept herdr-core
+                 terminal named "shepherd" unless it is already running (safe
+                 to run at login and every few minutes)
   board          Open the status board (a live TUI: pause/resume, run now,
-                 details; opens as a herdr pane when invoked without a TTY)
+                 details; opens as a herdr pane when invoked without a TTY,
+                 runs in the calling terminal on herdr-core)
   list           List actions with their schedules and next runs
   run <name>     Fire an action now
   wake <name>    Ask the daemon to fire an action on its next tick (queued
@@ -28,9 +32,15 @@ func usage(w *os.File) {
     --at <when>  Fire it at an instant instead of now: RFC3339 or
                  "YYYY-MM-DD HH:MM[:SS]" in local time. The daemon fires it on
                  the first tick at or after the instant
-  status         Show daemon liveness and the next scheduled run
-    --notify     Also show the status as a herdr notification
-  version        Print the version`)
+  status         Show daemon liveness, the next scheduled run and the backend
+    --notify     Also show the status as a herdr notification (on herdr-core,
+                 a file in the state dir's notify/ folder)
+  version        Print the version
+
+The backend is the terminal Herdr ("herdr") or the Herdr desktop app's
+herdr-core ("core"): HERDR_SHEPHERD_BACKEND, else backend = "..." in
+config.toml in $XDG_CONFIG_HOME/herdr-shepherd (~/.config/herdr-shepherd),
+else whichever is installed.`)
 }
 
 func main() {
@@ -46,6 +56,8 @@ func main() {
 		} else {
 			err = runDaemon()
 		}
+	case "start":
+		err = cmdStart()
 	case "board":
 		err = cmdBoard()
 	case "board-ui":

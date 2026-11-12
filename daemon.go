@@ -107,7 +107,7 @@ type daemon struct {
 
 func runDaemon() error {
 	p := resolvePaths()
-	client, err := newHerdrClient()
+	client, err := newClient()
 	if err != nil {
 		return err
 	}

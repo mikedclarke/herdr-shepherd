@@ -94,6 +94,55 @@ sh scripts/build.sh
 
 The already-running daemon keeps the binary it started with; restart the herdr server to restart it on the new build (scheduling changes need this, display-only changes don't). The board, status action, and CLI pick up the new binary the next time they launch.
 
+## Running on the Herdr desktop app (herdr-core)
+
+The new Herdr is two programs: the desktop app (`herdr-app`) and herdr-core (`hc`), the runtime that owns every terminal. It has no plugins, so Shepherd runs there as a standalone binary that drives both programs. Schedules, gates, the run log and the board work exactly as under the terminal Herdr; each agent run is a tab in a space named `scheduled`, started through `hc` so it appears without taking the screen.
+
+**Install the binary.** `hc` and `herdr-app` must be on your `$PATH` or in `~/.local/bin`, where they install themselves.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mikedclarke/herdr-shepherd/main/scripts/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+# or from a checkout
+go build -o ~/.local/bin/herdr-shepherd .
+```
+
+**Choose the backend.** Shepherd picks the terminal Herdr whenever it finds that Herdr's plugin environment or a `herdr` binary that answers, so on a machine with both installed say which one you mean, in `~/.config/herdr-shepherd/config.toml` (or under `$XDG_CONFIG_HOME`):
+
+```toml
+backend = "core"
+```
+
+`HERDR_SHEPHERD_BACKEND=core` overrides the file for one command. `start` passes the backend on to the daemon it launches, but the other commands you type later read `config.toml`, so keep the setting there. `herdr-shepherd status` prints the backend it resolved.
+
+**Start the daemon.**
+
+```bash
+herdr-shepherd start
+# shepherd daemon started in herdr-core terminal t2a (shepherd)
+```
+
+`start` runs `herdr-shepherd daemon` in a kept herdr-core terminal named `shepherd`, so the daemon has the core's macOS privacy grants, and `hc attach shepherd` (`ctrl+\` detaches) or `hc read shepherd --lines 200` shows its log. When the daemon is already running `start` says so and exits 0; when a `shepherd` terminal is left over from a daemon that died, it removes that terminal first. That makes it safe to run at login and every few minutes: [`examples/launchd/dev.herdr-shepherd.start.plist`](examples/launchd/dev.herdr-shepherd.start.plist) is a LaunchAgent that does both (replace its placeholder paths). `herdr-shepherd daemon` still runs the scheduler in the foreground if you would rather host it yourself.
+
+**Where things live.** Actions are `~/.config/herdr-shepherd/actions/*.toml`; history and locks are in `~/.local/state/herdr-shepherd` (`$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` move them). Herdr is never asked for a directory on this backend, and `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR` still win when set.
+
+**Moving from the plugin.** Stop the plugin's daemon first: the two daemons use different lock files, so both running would fire every action twice. Then copy your actions and history across:
+
+```bash
+OLD_CONFIG=$(herdr plugin config-dir mikedclarke.herdr-shepherd)
+OLD_STATE=~/.local/state/herdr/plugins/mikedclarke.herdr-shepherd
+mkdir -p ~/.config/herdr-shepherd ~/.local/state/herdr-shepherd
+cp -R "$OLD_CONFIG/actions" ~/.config/herdr-shepherd/
+cp "$OLD_STATE/state.json" "$OLD_STATE"/runs.jsonl* ~/.local/state/herdr-shepherd/
+```
+
+`state.json` carries the last-run times, so routines do not re-run and heartbeats keep their clock.
+
+**What differs.**
+
+- No plugin actions: `Shepherd: Board` and `Shepherd: Status` do not exist. `herdr-shepherd board` runs the board in the terminal you call it from.
+- Notifications are files. The new Herdr lets only a mod post a notification, so each one Shepherd raises (a blocked session, a config error, `status --notify`) is written to `notify/<unix nanoseconds>.json` in the state directory as `{"title", "body", "sound", "at"}`, written under a `.tmp` name and renamed into place. Files older than a day are deleted. A mod can watch that folder; none ships with this release.
+- The daemon logs to `shepherd.log` in the state directory, as under the plugin.
+
 ## The board
 
 The board is a live status view of every action: schedule, last run, and next run, plus daemon liveness. Refreshed every two seconds, so a finishing run shows up on its own, and an action shows `running…` while a run is in flight, whether scheduled or manual, in this process or another.
@@ -285,18 +334,21 @@ Validation rejects rather than clamps: a silently adjusted schedule runs at a ti
 
 ```
 herdr-shepherd daemon         # the scheduler (the manifest startup hook runs daemon --detach)
+herdr-shepherd start          # herdr-core: start the daemon in a herdr-core terminal unless it runs
 herdr-shepherd board          # the live status board (pause/resume, run now, details)
 herdr-shepherd list           # actions, schedules, last/next runs
 herdr-shepherd run <name>     # fire an action now
 herdr-shepherd wake <name>    # ask the daemon to fire an action on its next tick
 herdr-shepherd wake <name> --at "2026-09-01 08:35"   # ...or at an instant
-herdr-shepherd status         # daemon liveness + next run (--notify for a herdr toast)
+herdr-shepherd status         # daemon liveness, next run, backend (--notify for a herdr toast)
 herdr-shepherd version        # print the version
 ```
 
-`list`, `status`, `version`, `board`, `wake <name>`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`.
+`list`, `status`, `version`, `board`, `wake <name>`, and `run <name>` for a **script** action work in any shell. The commands that ask herdr to do something need herdr's socket (`HERDR_SOCKET_PATH`, injected into the panes herdr opens), so run them from a pane inside herdr: `daemon` (and `daemon --detach`, whose child inherits the environment), `run <name>` for a **heartbeat or routine**, `status --notify`, and the board's `r` on an agent action. Outside herdr they fail with `HERDR_SOCKET_PATH is not set`. On the herdr-core backend there is no socket and every command works from any shell (see [Running on the Herdr desktop app](#running-on-the-herdr-desktop-app-herdr-core)).
 
 ### Where config and state live
+
+On the herdr-core backend config is `~/.config/herdr-shepherd` and state `~/.local/state/herdr-shepherd` (or under `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`), and herdr is never asked; see [Running on the Herdr desktop app](#running-on-the-herdr-desktop-app-herdr-core). The rest of this section is the terminal Herdr.
 
 - **Config** is herdr's managed plugin directory: `herdr plugin config-dir mikedclarke.herdr-shepherd` prints it, and actions live in `actions/*.toml` inside it. Inside a plugin context herdr injects `HERDR_PLUGIN_CONFIG_DIR` and that wins. From an ordinary shell the CLI asks herdr for the same directory, so `list` and `status` agree with the daemon.
 - **Fallbacks** apply only when herdr itself is unreachable: `$XDG_CONFIG_HOME/herdr-shepherd`, else `~/.config/herdr-shepherd`. Shepherd prints one warning naming the directory it fell back to and why; a fallback means you are reading a different set of actions than the daemon is running.

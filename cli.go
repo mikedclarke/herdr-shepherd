@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 )
@@ -225,8 +226,9 @@ func cmdStatus(notify bool) error {
 
 	fmt.Println(title)
 	fmt.Println(body)
+	fmt.Println("backend: " + p.Backend)
 	if notify {
-		client, err := newHerdrClient()
+		client, err := newClient()
 		if err != nil {
 			return err
 		}
@@ -323,7 +325,7 @@ func cmdRun(name string) error {
 // no auto-close, no schedule coordination). It must not write to the
 // terminal: the board calls it from inside the TUI's alternate screen.
 func startAgentRun(a *Action) (tabID string, err error) {
-	client, err := newHerdrClient()
+	client, err := newClient()
 	if err != nil {
 		return "", err
 	}
@@ -397,4 +399,63 @@ func recordManualStart(a *Action, tabID string) error {
 		At: time.Now(), Action: a.Name, Kind: a.Kind, Status: "started",
 		Detail: "tab " + tabID, Trigger: triggerManual,
 	})
+}
+
+// cmdStart starts the daemon in a herdr-core terminal, so it runs with the
+// core's macOS privacy grants and a person can attach to it. It is safe to run
+// at login and every few minutes: a running daemon is left alone.
+func cmdStart() error {
+	p := resolvePaths()
+	if p.Backend != backendCore {
+		return errors.New("start is for the herdr-core backend; on the terminal Herdr the plugin's startup hook starts the daemon")
+	}
+	client, err := newCoreClient(p.StateDir)
+	if err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	msg, err := startCoreDaemon(client, p, exe)
+	if err != nil {
+		return err
+	}
+	fmt.Println(msg)
+	return nil
+}
+
+func startCoreDaemon(c *coreClient, p paths, exe string) (string, error) {
+	if err := os.MkdirAll(p.StateDir, 0o755); err != nil {
+		return "", err
+	}
+	held, err := daemonLockHeld(p.LockFile())
+	if err != nil {
+		return "", err
+	}
+	if held {
+		return "daemon already running", nil
+	}
+	addr, err := c.startDaemon(exe)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("shepherd daemon started in herdr-core terminal %s (%s)", addr, daemonTerminal), nil
+}
+
+// daemonLockHeld probes the daemon lock without taking it over: the pid
+// written inside belongs to the daemon.
+func daemonLockHeld(path string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }

@@ -16,9 +16,17 @@ import (
 // terminal) it runs the TUI right here; invoked as the manifest action
 // (server-side, no terminal) or with its output piped it asks herdr to host
 // the `board` pane entrypoint instead — the herdr-plus pattern, so herdr
-// creates and tears down the pane.
+// creates and tears down the pane. The core has no plugin panes, so there the
+// board always runs in the calling terminal.
 func cmdBoard() error {
 	if isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd()) {
+		return runBoardUI()
+	}
+	backend, err := resolveBackend()
+	if err != nil {
+		return err
+	}
+	if backend == backendCore {
 		return runBoardUI()
 	}
 	herdr := os.Getenv("HERDR_BIN_PATH")
