@@ -125,6 +125,8 @@ herdr-shepherd start
 
 **Where things live.** Actions are `~/.config/herdr-shepherd/actions/*.toml`; history and locks are in `~/.local/state/herdr-shepherd` (`$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` move them). Herdr is never asked for a directory on this backend, and `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR` still win when set.
 
+**Manage actions from the app.** [`mods/shepherd/`](mods/shepherd/) is a mod for the desktop app: a window that lists the actions and pauses, enables, runs, edits and creates them through the verbs in [Scripting and other front ends](#scripting-and-other-front-ends). Copy the folder to `~/.config/herdr-app/mods/shepherd/`; its README has the key binding.
+
 **Moving from the plugin.** Stop the plugin's daemon first: the two daemons use different lock files, so both running would fire every action twice. Then copy your actions and history across:
 
 ```bash

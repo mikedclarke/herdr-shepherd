@@ -13,3 +13,5 @@ dist/
 # Local environment
 .env
 .DS_Store
+mods/*/gpui-kit.d.ts
+mods/*/jsconfig.json

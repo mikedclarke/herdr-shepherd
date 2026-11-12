@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A mod for the Herdr desktop app** (`mods/shepherd/`): a window that lists
+  the actions with their state, last and next run, pauses, enables and wakes
+  them, shows an action's recent runs, and edits or creates one with a form drawn
+  from `fields` or as text. It runs only the command-line verbs and writes no
+  files itself. Install by copying the folder into the app's mods folder.
+
 ## [0.11.0] - 2026-11-12
 
 ### Added
