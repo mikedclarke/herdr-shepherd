@@ -93,7 +93,7 @@ ln -s ~/.config/herdr/plugins/github/mikedclarke.herdr-shepherd-*/bin/herdr-shep
 
 The new Herdr is two programs: the desktop app (`herdr-app`) and herdr-core (`hc`), the runtime that owns every terminal. It has no plugins, so Shepherd runs there as a standalone binary that drives both programs. Each agent run is a tab in a space named `scheduled`, opened without taking the screen.
 
-Requires Shepherd 0.11.0 or later (0.10.0 for the scheduler alone), with `hc` and `herdr-app` on your `$PATH` or in `~/.local/bin`, where they install themselves.
+Requires Shepherd 0.11.0 or later, with `hc` and `herdr-app` on your `$PATH` or in `~/.local/bin`, where they install themselves. Tested with hc 0.1.21 and herdr-app 0.1.15.
 
 **1. Install the binary.**
 
