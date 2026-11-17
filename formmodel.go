@@ -256,7 +256,7 @@ func newFormModel(actionsDir string) *formModel {
 			"name": "", "kind": "routine", "directory": "~", "enabled": "false",
 			"prompt": "",
 			"cli":    "claude", "model": "", "provider": "", "thinking": "", "permission_mode": "default",
-			"auto_close": "false", "watch_minutes": "240",
+			"auto_close": "false", "watch_minutes": "240", "workspace": "",
 			"command": "", "timeout_minutes": "30", "defer_retry_minutes": "0",
 			"interval_minutes": "30", "wh_days": "", "start_hour": "", "end_hour": "",
 			"preset": "weekdays", "hours": "9", "minute": "0",
@@ -299,6 +299,7 @@ func (f *formModel) loadAction(a *Action) {
 	v["permission_mode"] = a.PermissionMode
 	v["auto_close"] = fmt.Sprintf("%t", a.AutoClose)
 	v["watch_minutes"] = strconv.Itoa(a.WatchMinutes)
+	v["workspace"] = a.Workspace
 	v["command"] = a.Command
 	v["timeout_minutes"] = strconv.Itoa(a.TimeoutMinutes)
 	v["defer_retry_minutes"] = strconv.Itoa(a.DeferRetryMinutes)
@@ -366,6 +367,7 @@ func (f *formModel) rebuild() {
 			permissions,
 			formField{key: "auto_close", label: "auto close", ftype: ftBool, help: "close the run's tab when the run completes"},
 			formField{key: "watch_minutes", label: "watch (min)", ftype: ftInt},
+			formField{key: "workspace", label: "workspace", ftype: ftText, help: "label of the workspace the run's tab opens in; blank = scheduled"},
 		)
 	}
 	switch kind {
@@ -727,6 +729,7 @@ func (f *formModel) buildAction() (*Action, error) {
 		if a.WatchMinutes, err = intVal("watch_minutes", "watch"); err != nil {
 			return nil, err
 		}
+		a.Workspace = v["workspace"]
 		a.Gate = f.carryGate
 		a.GateTimeoutMinutes = f.carryGateTimeout
 		a.AppendSystemPrompt = f.carryAppendSystemPrompt
@@ -835,6 +838,9 @@ func writeActionFile(path string, a *Action) error {
 		fmt.Fprintf(&b, "permission_mode = %q\n", a.PermissionMode)
 		fmt.Fprintf(&b, "auto_close = %t\n", a.AutoClose)
 		fmt.Fprintf(&b, "watch_minutes = %d\n", a.WatchMinutes)
+		if a.Workspace != "" {
+			fmt.Fprintf(&b, "workspace = %q\n", a.Workspace)
+		}
 		if a.Gate != "" {
 			fmt.Fprintf(&b, "gate = %q\n", a.Gate)
 			fmt.Fprintf(&b, "gate_timeout_minutes = %d\n", a.GateTimeoutMinutes)

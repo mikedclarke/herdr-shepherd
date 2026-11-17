@@ -7,6 +7,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-17
+
+### Added
+
+- **An action can choose the workspace its runs open in** (#1). The optional
+  key `workspace = "<label>"` on an agent action opens each run's tab in the
+  workspace carrying exactly that label, so a project's scheduled passes show
+  up under the project's own workspace. When no workspace carries the label,
+  one is created in the action's `directory` and its first tab is used for the
+  run. With the key unset, runs open in `scheduled` as before. `auto_close`
+  still closes only the run's own tab. The board's form, `fields`, `get` and
+  `apply` carry the key, so the desktop mod shows it too. A script action
+  opens no tab and refuses the key.
+
 ## [0.11.0] - 2026-11-15
 
 0.10.0 was not published as a release, so this release carries both: its

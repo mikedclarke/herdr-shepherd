@@ -118,6 +118,46 @@ func TestAnExistingScheduledWorkspaceIsAdoptedByItsExactLabel(t *testing.T) {
 	}
 }
 
+func TestAnActionsWorkspaceTakesItsRunsTab(t *testing.T) {
+	fake := &scriptedHerdr{spaces: []workspaceInfo{
+		{WorkspaceID: "wS", Label: scheduledWorkspace, Number: 1},
+		{WorkspaceID: "wP", Label: "project-a", Number: 2},
+	}}
+	a := watchedAction()
+	a.Workspace = "project-a"
+	tabID, _, err := launchAgentTab(fake, a, 0, triggerSchedule, launchAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tabID != "wP:t2" || len(fake.spaces) != 2 {
+		t.Errorf("the tab belongs in the workspace labelled project-a, got %q spaces=%v", tabID, fake.spaces)
+	}
+	// An action that names none still shares the scheduled workspace.
+	tabID, _, err = launchAgentTab(fake, watchedAction(), 0, triggerSchedule, launchAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tabID != "wS:t3" || len(fake.spaces) != 2 {
+		t.Errorf("an action with no workspace uses %q, got %q spaces=%v", scheduledWorkspace, tabID, fake.spaces)
+	}
+}
+
+func TestAnActionsMissingWorkspaceIsCreated(t *testing.T) {
+	fake := &scriptedHerdr{spaces: []workspaceInfo{{WorkspaceID: "wS", Label: scheduledWorkspace, Number: 1}}}
+	a := watchedAction()
+	a.Workspace = "project-a"
+	tabID, _, err := launchAgentTab(fake, a, 0, triggerSchedule, launchAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.spaces) != 2 || fake.spaces[1].Label != "project-a" || tabID != "ws1:t1" {
+		t.Fatalf("a workspace labelled project-a should be created and its root tab used: spaces=%v tab=%q", fake.spaces, tabID)
+	}
+	if got := fake.renamed["ws1:t1"]; got != a.Name+" 2026-09-30 06:10" {
+		t.Errorf("root tab label = %q", got)
+	}
+}
+
 func TestPickWorkspace(t *testing.T) {
 	spaces := []workspaceInfo{{WorkspaceID: "w9", Label: "x", Number: 9}, {WorkspaceID: "w3", Label: "x", Number: 3}, {WorkspaceID: "w1", Label: "X", Number: 1}}
 	if got := pickWorkspace(spaces, "x"); got != "w3" {

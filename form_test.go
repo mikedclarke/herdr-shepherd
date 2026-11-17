@@ -169,6 +169,36 @@ func TestFormSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFormKeepsTheWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	f := newFormModel(dir)
+	f.values["name"] = "nightly-report"
+	f.values["prompt"] = "write the nightly report"
+	f.values["workspace"] = "project-a"
+	f.rebuild()
+	if done, saved := f.trySave(); !done || !saved {
+		t.Fatalf("save failed: %s", f.err)
+	}
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) > 0 || len(actions) != 1 || actions[0].Workspace != "project-a" {
+		t.Fatalf("workspace not written: %v %v %+v", err, fileErrs, actions)
+	}
+	// Editing an action must not drop its workspace, and clearing the field
+	// must drop the key.
+	e := newFormModelForAction(actions[0], dir)
+	if e.values["workspace"] != "project-a" {
+		t.Fatalf("edit form lost the workspace: %q", e.values["workspace"])
+	}
+	e.values["workspace"] = ""
+	if done, saved := e.trySave(); !done || !saved {
+		t.Fatalf("save failed: %s", e.err)
+	}
+	data, err := os.ReadFile(actions[0].SourceFile)
+	if err != nil || strings.Contains(string(data), "workspace") {
+		t.Errorf("a cleared workspace must leave no key: %v\n%s", err, data)
+	}
+}
+
 func TestFormSaveQuotesTrickyStrings(t *testing.T) {
 	dir := t.TempDir()
 	f := newFormModel(dir)

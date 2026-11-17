@@ -11,8 +11,9 @@ import (
 	"time"
 )
 
-// scheduledWorkspace labels the one workspace every agent run opens a tab in,
-// so scheduled sessions share one sidebar entry instead of one each.
+// scheduledWorkspace labels the workspace an agent run opens a tab in unless
+// its action names another, so scheduled sessions share one sidebar entry
+// instead of one each.
 const scheduledWorkspace = "scheduled"
 
 // The two ways a launch fails: nothing was opened, or the tab was opened and
@@ -22,7 +23,7 @@ var (
 	errLaunchSubmit = errors.New("run command")
 )
 
-// launchMu serialises finding or creating the scheduled workspace, so two runs
+// launchMu serialises finding or creating a run's workspace, so two runs
 // firing together in one process share it rather than each creating one.
 var launchMu sync.Mutex
 
@@ -50,20 +51,20 @@ func pickWorkspace(spaces []workspaceInfo, label string) string {
 	return found[0].WorkspaceID
 }
 
-// openRunTab opens a run's tab in the scheduled workspace, creating the
-// workspace when none carries its label. A new workspace's root tab becomes
-// the run's tab, so no empty shell tab is left behind.
-func openRunTab(client herdrAPI, cwd, label string, env map[string]string) (tabID, paneID string, err error) {
+// openRunTab opens a run's tab in the workspace labelled workspace, creating
+// that workspace when none carries the label. A new workspace's root tab
+// becomes the run's tab, so no empty shell tab is left behind.
+func openRunTab(client herdrAPI, workspace, cwd, label string, env map[string]string) (tabID, paneID string, err error) {
 	launchMu.Lock()
 	defer launchMu.Unlock()
 	spaces, err := client.workspaceList()
 	if err != nil {
 		return "", "", err
 	}
-	if wsID := pickWorkspace(spaces, scheduledWorkspace); wsID != "" {
+	if wsID := pickWorkspace(spaces, workspace); wsID != "" {
 		return client.tabCreate(wsID, cwd, label, env)
 	}
-	_, tabID, paneID, err = client.workspaceCreate(cwd, scheduledWorkspace, env)
+	_, tabID, paneID, err = client.workspaceCreate(cwd, workspace, env)
 	if err != nil {
 		return "", "", err
 	}
@@ -90,7 +91,7 @@ func launchCommandTab(client herdrAPI, a *Action, command string, settle time.Du
 	env := a.EnvMap()
 	env["SHEPHERD_ACTION"] = a.Name
 	env["SHEPHERD_TRIGGER"] = trigger
-	tabID, paneID, err = openRunTab(client, a.Dir(), runTabLabel(a.Name, at), env)
+	tabID, paneID, err = openRunTab(client, a.RunWorkspace(), a.Dir(), runTabLabel(a.Name, at), env)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", errLaunchCreate, err)
 	}

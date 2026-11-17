@@ -879,6 +879,7 @@ func (m *boardModel) viewDetail() string {
 		field("permissions", a.PermissionMode)
 		field("watch", fmt.Sprintf("%dm", a.WatchMinutes))
 		field("auto close", fmt.Sprintf("%t", a.AutoClose))
+		field("workspace", a.RunWorkspace())
 		field("prompt", truncate(strings.ReplaceAll(a.Prompt, "\n", " "), 100))
 	}
 

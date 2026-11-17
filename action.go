@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -52,6 +53,9 @@ type Action struct {
 	PermissionMode string `toml:"permission_mode"`
 	AutoClose      bool   `toml:"auto_close"`
 	WatchMinutes   int    `toml:"watch_minutes"`
+	// Workspace labels the workspace an agent run's tab opens in; blank means
+	// the shared scheduled workspace.
+	Workspace      string `toml:"workspace"`
 	Command        string `toml:"command"`
 	TimeoutMinutes int    `toml:"timeout_minutes"`
 	// DeferRetryMinutes is how long a script that exits 75 (deferred) keeps
@@ -89,6 +93,7 @@ func (a *Action) applyDefaults() {
 		a.PermissionMode = "default"
 	}
 	a.Gate = strings.TrimSpace(a.Gate)
+	a.Workspace = strings.TrimSpace(a.Workspace)
 	if a.Gate != "" && a.GateTimeoutMinutes == 0 {
 		a.GateTimeoutMinutes = defaultGateTimeoutMinutes
 	}
@@ -173,6 +178,9 @@ func (a *Action) validate() error {
 		if a.DeferRetryMinutes != 0 {
 			return fmt.Errorf("%s: defer_retry_minutes only applies to script actions", a.Name)
 		}
+		if strings.ContainsFunc(a.Workspace, unicode.IsControl) {
+			return fmt.Errorf("%s: workspace must be a single line of plain text", a.Name)
+		}
 		if a.Gate == "" && a.GateTimeoutMinutes != 0 {
 			return fmt.Errorf("%s: gate_timeout_minutes needs a gate", a.Name)
 		}
@@ -191,6 +199,9 @@ func (a *Action) validate() error {
 		}
 		if a.Thinking != "" {
 			return fmt.Errorf("%s: thinking only applies to agent actions", a.Name)
+		}
+		if a.Workspace != "" {
+			return fmt.Errorf("%s: workspace only applies to agent actions", a.Name)
 		}
 		if a.DeferRetryMinutes < 0 || a.DeferRetryMinutes > maxRunMinutes {
 			return fmt.Errorf("%s: defer_retry_minutes must be 0-%d, got %d", a.Name, maxRunMinutes, a.DeferRetryMinutes)
@@ -243,6 +254,14 @@ func (a *Action) validate() error {
 		}
 	}
 	return nil
+}
+
+// RunWorkspace is the label of the workspace the action's runs open in.
+func (a *Action) RunWorkspace() string {
+	if a.Workspace != "" {
+		return a.Workspace
+	}
+	return scheduledWorkspace
 }
 
 // Dir returns the action's directory with ~ and $VARS expanded.

@@ -347,7 +347,7 @@ preset = "cron"
 cron = "0 6 * * 1-5"            # 5-field cron: minute hour day-of-month month day-of-week
 ```
 
-Agent actions also accept `cli = "claude" | "codex" | "pi"`, `model = "..."`, `enabled = false`, `auto_close = true` (close the run's tab once the run ends), and `watch_minutes` (how long the daemon watches a session before flagging it). Treat `permission_mode = "skip"` with respect: it maps to the CLI's skip-all-permissions flag, on an unattended schedule. `pi` has no permission flags at all, so it only accepts `permission_mode = "default"`; its `model` value is passed as `--model` (pi treats it as a pattern or id).
+Agent actions also accept `cli = "claude" | "codex" | "pi"`, `model = "..."`, `enabled = false`, `auto_close = true` (close the run's tab once the run ends), `watch_minutes` (how long the daemon watches a session before flagging it), and `workspace = "..."` (the label of the workspace the run's tab opens in, instead of `scheduled`). Treat `permission_mode = "skip"` with respect: it maps to the CLI's skip-all-permissions flag, on an unattended schedule. `pi` has no permission flags at all, so it only accepts `permission_mode = "default"`; its `model` value is passed as `--model` (pi treats it as a pattern or id).
 
 A `pi` agent action may also set `thinking = "..."` (one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), passed as pi's `--thinking` flag to set the reasoning level for the run. It is pi-only: validation rejects it with `cli = "claude"` or `"codex"`, and on a script action. Blank leaves the model's own default.
 
@@ -380,6 +380,7 @@ Every key that has a default:
 | `permission_mode` | agent actions | `default` |
 | `auto_close` | agent actions | `false` |
 | `watch_minutes` | agent actions | `240` |
+| `workspace` | agent actions | unset (runs open in the workspace labelled `scheduled`) |
 | `gate` | agent actions | unset (the agent runs every occurrence) |
 | `gate_timeout_minutes` | agent actions with a `gate` | `10` |
 | `env` | all | unset (the pane or child process inherits the daemon's environment) |
@@ -412,6 +413,7 @@ Validation rejects rather than clamps: a silently adjusted schedule runs at a ti
 - **The pane knows why it was launched.** Agent sessions get `SHEPHERD_ACTION` (the action name) and `SHEPHERD_TRIGGER` (`schedule`, `wake`, or `manual`) in their environment, so a prompt or collector can behave differently for a wake than for a scheduled run. A `gate` command gets the same two variables. Both also get the action's `[env]` table, if it has one.
 - **A gate can spare the agent.** With `gate` set, the occurrence still happens on schedule (or on a wake), but the gate command decides whether the agent is worth starting: exit 75 records `skipped` and the daemon moves on; exit 0 opens the run's tab; anything else opens it too, after one notification, so a gate that breaks costs a warning rather than a silent schedule. A wake absorbed by a skipped occurrence is consumed like any other.
 - **One workspace for every run.** Each agent run opens a tab labelled `<action> <YYYY-MM-DD HH:MM>` in the workspace labelled `scheduled`, so scheduled sessions take one sidebar entry however many run. Shepherd finds that workspace by its exact label (the lowest-numbered when several carry it) and creates it when there is none, using the new workspace's first tab for the run so no empty shell is left behind. It only ever closes the run's own tab; herdr closes a workspace together with its last tab, so the `scheduled` workspace goes away once its last run is closed and returns with the next one.
+- **Or a workspace of your choosing.** Set `workspace = "my-project"` on an agent action and its runs open in the workspace labelled exactly `my-project` instead, so a project's scheduled passes sit beside the project's own tabs. The same rules apply: the label is matched exactly (the lowest-numbered workspace when several carry it), and when no workspace carries it Shepherd creates one in the action's `directory` and uses its first tab for the run. A standing workspace with tabs of your own is never closed by a run ending; one Shepherd created goes away with its last tab, like `scheduled`.
 - **Agent commands are typed into a shell.** Shepherd submits the agent invocation as a POSIX-quoted command line into the run's pane, so that pane's shell must be sh-compatible (bash, zsh, dash, ksh). A fish or nu login shell will mangle the quoting.
 - **DST:** on fall-back days a time inside the repeated hour runs once, on the hour's first pass; the second pass runs nothing. On spring-forward days a job scheduled inside the skipped hour does not run that day; the local time simply never occurs.
 

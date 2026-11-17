@@ -119,6 +119,8 @@ func TestLoadActionsRejectsInvalidPerFile(t *testing.T) {
 		"name with backslash": "name = \"a\\\\b\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n",
 		"dotted name":         "name = \".hidden\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\n",
 		"long timeout":        "name = \"a\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\ntimeout_minutes = 1441\n",
+		"workspace on script": "name = \"a\"\nkind = \"script\"\ndirectory = \"/tmp\"\ncommand = \"true\"\nworkspace = \"project-a\"\n",
+		"multiline workspace": "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\nworkspace = \"project\\na\"\n",
 		"long watch":          "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\nwatch_minutes = 1441\n",
 		"empty hour range":    "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n[heartbeat.working_hours]\nstart_hour = 9\nend_hour = 9\n",
 	}
@@ -434,5 +436,25 @@ func TestEnvWithoutATableIsEmpty(t *testing.T) {
 	}
 	if m := a.EnvMap(); m == nil || len(m) != 0 {
 		t.Errorf("no table, an empty map the caller can add to: %v", m)
+	}
+}
+
+func TestWorkspaceKey(t *testing.T) {
+	dir := t.TempDir()
+	writeAction(t, dir, "a.toml", "name = \"a\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\nworkspace = \"  Project A  \"\n")
+	writeAction(t, dir, "b.toml", "name = \"b\"\nkind = \"heartbeat\"\ndirectory = \"/tmp\"\nprompt = \"x\"\n")
+	actions, fileErrs, err := LoadActions(dir)
+	if err != nil || len(fileErrs) != 0 || len(actions) != 2 {
+		t.Fatalf("err=%v fileErrs=%v actions=%d", err, fileErrs, len(actions))
+	}
+	got := map[string]string{}
+	for _, a := range actions {
+		got[a.Name] = a.RunWorkspace()
+	}
+	if got["a"] != "Project A" {
+		t.Errorf("the label is used as written, less surrounding space: %q", got["a"])
+	}
+	if got["b"] != scheduledWorkspace {
+		t.Errorf("an action that names no workspace uses %q, got %q", scheduledWorkspace, got["b"])
 	}
 }
